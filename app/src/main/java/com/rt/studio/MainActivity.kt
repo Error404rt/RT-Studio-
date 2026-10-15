@@ -114,7 +114,6 @@ private fun StudioHome() {
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("RT", fontWeight = FontWeight.ExtraBold, letterSpacing = (-1).sp)
-                    Text("•", color = MaterialTheme.colorScheme.primary.copy(alpha = 0.58f), fontWeight = FontWeight.Light)
                     Text("Studio", fontWeight = FontWeight.Bold, letterSpacing = (-0.6).sp)
                     Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(50), modifier = Modifier.padding(start = 8.dp)) {
                         Text("BETA", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
@@ -134,13 +133,6 @@ private fun StudioHome() {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Твоя иконка.", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
-                    Text("Твой стиль.", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.ExtraBold)
-                    Text("Создавай, редактируй и собирай собственные наборы иконок Android.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
             item {
                 Card(shape = RoundedCornerShape(30.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
