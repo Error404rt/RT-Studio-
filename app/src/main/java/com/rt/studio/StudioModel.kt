@@ -200,7 +200,7 @@ fun designToSvg(d: IconDesign): String {
                 ElementKind.STAR -> "<path d=\"M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z\"/>"
                 ElementKind.LINE -> "<path d=\"M-95 0 H95\" fill=\"none\" stroke=\"$color\" stroke-width=\"15\"/>"
                 ElementKind.DIAMOND -> "<path d=\"M0 -90 L75 0 L0 90 L-75 0 Z\"/>"
-                ElementKind.PATH -> "<path d=\\"" + e.pathData + "\\"/>"
+                ElementKind.PATH -> "<path d=" + '"' + e.pathData + '"' + "/>"
             }
             append("<g opacity=\"" + e.opacity.coerceIn(0f, 1f) + "\" transform=\"translate(" + (e.x * 512f) + " " + (e.y * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale + ")\" fill=\"" + color + "\">" + geom + "</g>")
         }

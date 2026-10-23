@@ -127,10 +127,10 @@ private fun loadPack(context: android.content.Context): List<PackItem> = runCatc
     (0 until a.length()).map { val o = a.getJSONObject(it); PackItem(o.optString("name"), o.optString("component"), designFromJson(o.getJSONObject("design"))) }
 }.getOrDefault(emptyList())
 
-private fun saveProject(context: android.content.Context, design: IconDesign, items: List<PackItem>) {
+private fun saveProject(context: android.content.Context, design: IconDesign, items: List<PackItem>, packTitle: String, packageId: String) {
     val a = JSONArray()
     items.forEach { item -> a.put(JSONObject().put("name", item.name).put("component", item.component).put("design", item.design.toJson())) }
-    context.getSharedPreferences("rt_studio", 0).edit().putString("design", design.toJson().toString()).putString("pack", a.toString()).apply()
+    context.getSharedPreferences("rt_studio", 0).edit().putString("design", design.toJson().toString()).putString("pack", a.toString()).putString("packTitle", packTitle).putString("packApplicationId", packageId).apply()
 }
 
 private fun readLimited(input: ZipInputStream, maxBytes: Int): ByteArray {
@@ -278,11 +278,14 @@ private fun StudioApp() {
     var status by remember { mutableStateOf("Проекты сохраняются на устройстве автоматически.") }
     var imageReference by remember { mutableStateOf<Bitmap?>(null) }
     var packIconName by remember { mutableStateOf("my_icon") }
+    val prefs = remember { context.getSharedPreferences("rt_studio", 0) }
+    var packTitle by remember { mutableStateOf(prefs.getString("packTitle", "RT Studio Icon Pack") ?: "RT Studio Icon Pack") }
+    var packApplicationId by remember { mutableStateOf(prefs.getString("packApplicationId", "com.rt.iconpack.generated") ?: "com.rt.iconpack.generated") }
     var packageComponent by remember { mutableStateOf("") }
     var importedNames by remember { mutableStateOf<List<String>>(emptyList()) }
     var referenceDetails by remember { mutableStateOf("") }
 
-    LaunchedEffect(design, packItems.toList()) { saveProject(context, design, packItems.toList()) }
+    LaunchedEffect(design, packItems.toList(), packTitle, packApplicationId) { saveProject(context, design, packItems.toList(), packTitle, packApplicationId) }
     fun change(next: IconDesign) {
         if (next != design) {
             undo.add(design)
@@ -321,8 +324,8 @@ private fun StudioApp() {
         }.onSuccess { status = "SVG экспортирован." }.onFailure { status = "Ошибка экспорта SVG: " + it.message }
     }
     val packExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-        if (uri != null) runCatching { exportPack(context, uri, packItems.toList(), design) }
-            .onSuccess { status = "ZIP с PNG, appfilter.xml и инструкцией экспортирован." }
+        if (uri != null) runCatching { exportPack(context, uri, packItems.toList(), design, packTitle, packApplicationId) }
+            .onSuccess { status = "Проект Icon Pack с PNG, appfilter.xml и workflow экспортирован. Загрузите его в GitHub, чтобы получить APK через Actions." }
             .onFailure { status = "Ошибка экспорта набора: " + it.message }
     }
 
@@ -389,6 +392,7 @@ private fun StudioApp() {
             )
             StudioTab.PACK -> PackScreen(
                 modifier = Modifier.fillMaxSize().padding(padding), design = design, items = packItems,
+                packTitle = packTitle, packageId = packApplicationId, onPackTitle = { packTitle = it }, onPackageId = { packApplicationId = it },
                 iconName = packIconName, component = packageComponent,
                 onName = { packIconName = it }, onComponent = { packageComponent = it },
                 onAdd = {
@@ -396,7 +400,7 @@ private fun StudioApp() {
                     if (packItems.any { it.name == name }) status = "Иконка с именем " + name + " уже есть."
                     else { packItems.add(PackItem(name, packageComponent.trim(), design)); status = "Иконка " + name + " добавлена в набор." }
                 },
-                onDelete = { packItems.removeAt(it) }, onExport = { packExporter.launch("rt-studio-icon-pack.zip") },
+                onDelete = { packItems.removeAt(it) }, onExport = { packExporter.launch("rt-studio-icon-pack-project.zip") },
                 onImport = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) }, status = status
             )
         }
@@ -676,17 +680,20 @@ private fun PresetButton(title: String, subtitle: String, onClick: () -> Unit) {
 
 @Composable
 private fun PackScreen(
-    modifier: Modifier, design: IconDesign, items: List<PackItem>, iconName: String, component: String,
+    modifier: Modifier, design: IconDesign, items: List<PackItem>, packTitle: String, packageId: String,
+    onPackTitle: (String) -> Unit, onPackageId: (String) -> Unit, iconName: String, component: String,
     onName: (String) -> Unit, onComponent: (String) -> Unit, onAdd: () -> Unit, onDelete: (Int) -> Unit,
     onExport: () -> Unit, onImport: () -> Unit, status: String
 ) {
     LazyColumn(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Text("Сборщик Icon Pack", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("Добавляй созданные иконки и их ComponentInfo для appfilter.xml. Экспорт сохраняет ресурсы, но не выдаёт себя за собранный APK.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Добавляй созданные иконки и ComponentInfo. Экспорт включает Android-проект, launcher-метаданные и GitHub Actions для сборки APK.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item {
             Card { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(value = packTitle, onValueChange = onPackTitle, label = { Text("Название Icon Pack") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(value = packageId, onValueChange = onPackageId, label = { Text("Application ID") }, supportingText = { Text("Например, com.example.myicons") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconCanvas(design, Modifier.size(76.dp))
                     Column(Modifier.padding(start = 12.dp)) { Text("Текущая иконка", fontWeight = FontWeight.Bold); Text(design.glyph.title + " · " + design.shape.title, style = MaterialTheme.typography.bodySmall) }
@@ -723,41 +730,120 @@ private fun PackScreen(
             }
         }
         item {
-            Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Download, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Экспортировать ZIP-ресурсы") }
+            Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Download, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Экспорт проекта для APK") }
             OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.FileOpen, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Анализировать APK/ZIP референс") }
             Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-private fun exportPack(context: android.content.Context, uri: Uri, items: List<PackItem>, current: IconDesign) {
+private fun exportPack(context: android.content.Context, uri: Uri, items: List<PackItem>, current: IconDesign, requestedTitle: String, requestedPackageId: String) {
+    val title = requestedTitle.trim().ifBlank { "RT Studio Icon Pack" }.take(80)
+    val titleXml = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
+    val candidatePackage = requestedPackageId.trim().split(".").joinToString(".") { part ->
+        val cleaned = part.replace(Regex("[^A-Za-z0-9_]"), "_")
+        if (cleaned.firstOrNull()?.isLetter() == true) cleaned else "p_" + cleaned
+    }
+    val packageId = if (candidatePackage.contains(".") && candidatePackage.split(".").all { it.isNotBlank() }) candidatePackage else "com.rt.iconpack.generated"
+    val actual = if (items.isEmpty()) listOf(PackItem("rt_studio_preview", "", current)) else items
+    fun resourceName(raw: String): String {
+        val clean = raw.lowercase().replace(Regex("[^a-z0-9_]+"), "_").trim('_').ifBlank { "icon" }
+        return if (clean.first().isDigit()) "icon_" + clean else clean
+    }
+    fun xmlEscape(value: String) = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
+    val used = mutableSetOf<String>()
+    val namedItems = actual.mapNotNull { item ->
+        val name = resourceName(item.name)
+        if (used.add(name)) item to name else null
+    }
+    val mappings = namedItems.filter { it.first.component.startsWith("ComponentInfo{") && it.first.component.endsWith("}") }
+    val xml = buildString {
+        append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n")
+        mappings.forEach { (item, name) ->
+            append("  <item component=\"").append(xmlEscape(item.component)).append("\" drawable=\"").append(name).append("\" />\n")
+        }
+        append("</resources>\n")
+    }
+    val activityTitle = title.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$").replace("\n", " ").replace("\r", " ")
+    val activitySource = "package com.rt.iconpack.generated\n\n" +
+        "import android.app.Activity\nimport android.os.Bundle\nimport android.view.Gravity\nimport android.widget.LinearLayout\nimport android.widget.TextView\n\n" +
+        "class MainActivity : Activity() {\n" +
+        "    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n" +
+        "        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(32, 40, 32, 40) }\n" +
+        "        val heading = TextView(this).apply { text = \"" + activityTitle + "\"; textSize = 24f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 20) }\n" +
+        "        val details = TextView(this).apply { text = \"Icon pack resources are included. Open your launcher's icon settings and select this pack if the launcher supports its theme format.\"; textSize = 16f; gravity = Gravity.CENTER }\n" +
+        "        root.addView(heading); root.addView(details); setContentView(root)\n" +
+        "    }\n}\n"
+    val manifest = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+        "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\">\n" +
+        "  <application android:label=\"" + titleXml + "\" android:icon=\"@drawable/rt_pack_launcher\" android:allowBackup=\"false\" android:theme=\"@android:style/Theme.Material.Light.NoActionBar\">\n" +
+        "    <activity android:name=\".MainActivity\" android:exported=\"true\">\n" +
+        "      <intent-filter><action android:name=\"android.intent.action.MAIN\"/><category android:name=\"android.intent.category.LAUNCHER\"/></intent-filter>\n" +
+        "      <intent-filter><action android:name=\"org.adw.launcher.THEMES\"/><category android:name=\"android.intent.category.DEFAULT\"/></intent-filter>\n" +
+        "      <intent-filter><action android:name=\"com.teslacoilsw.launcher.THEMES\"/><category android:name=\"android.intent.category.DEFAULT\"/></intent-filter>\n" +
+        "    </activity>\n" +
+        "    <meta-data android:name=\"com.novalauncher\" android:resource=\"@xml/appfilter\"/>\n" +
+        "    <meta-data android:name=\"com.teslacoilsw.launcher\" android:resource=\"@xml/appfilter\"/>\n" +
+        "    <meta-data android:name=\"com.anddoes.launcher\" android:resource=\"@xml/appfilter\"/>\n" +
+        "  </application>\n</manifest>\n"
+    val appGradle = """
+        plugins {
+            id("com.android.application")
+        }
+
+        android {
+            namespace = "com.rt.iconpack.generated"
+            compileSdk = 35
+            defaultConfig {
+                applicationId = "$packageId"
+                minSdk = 23
+                targetSdk = 35
+                versionCode = 1
+                versionName = "1.0"
+            }
+        }
+    """.trimIndent() + "\n"
+    val settings = """
+        pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+        }
+        dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories { google(); mavenCentral() }
+        }
+        rootProject.name = "RTIconPack"
+        include(":app")
+    """.trimIndent() + "\n"
+    val workflow = "name: Build Icon Pack APK\n" +
+        "on:\n  push:\n    branches: [ \"main\" ]\n  workflow_dispatch:\n" +
+        "permissions:\n  contents: read\n" +
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n" +
+        "      - uses: actions/checkout@v4\n" +
+        "      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n          java-version: \"17\"\n" +
+        "      - name: Install Gradle\n        run: |\n" +
+        "          curl --fail --location --retry 3 https://services.gradle.org/distributions/gradle-8.11.1-bin.zip --output \"\$RUNNER_TEMP/gradle.zip\"\n" +
+        "          unzip -q \"\$RUNNER_TEMP/gradle.zip\" -d \"\$RUNNER_TEMP\"\n" +
+        "          echo \"\$RUNNER_TEMP/gradle-8.11.1/bin\" >> \"\$GITHUB_PATH\"\n" +
+        "      - name: Assemble installable debug APK\n        run: gradle --no-daemon assembleDebug\n" +
+        "      - uses: actions/upload-artifact@v4\n        with:\n          name: generated-icon-pack-apk\n          path: app/build/outputs/apk/debug/app-debug.apk\n          if-no-files-found: error\n          retention-days: 14\n"
+    val readme = title + "\n\nGenerated by RT Studio.\n\n1. Upload the contents of this project ZIP to a GitHub repository on the main branch.\n2. Open the repository's Actions tab. The workflow builds a debug APK and publishes it as the generated-icon-pack-apk artifact.\n3. Download the APK artifact and install it. Then select the icon pack in a launcher that supports its theme metadata/appfilter format.\n\nMappings included: " + mappings.size + "\nResource icons included: " + namedItems.size + "\n\nThis uses common ADW/Nova-style metadata, but no icon-pack format works in every launcher. Missing ComponentInfo mappings must be added in RT Studio before export.\n"
     val output = context.contentResolver.openOutputStream(uri) ?: error("Не удалось открыть файл для записи")
     ZipOutputStream(output.buffered()).use { zip ->
-        val actual = if (items.isEmpty()) listOf(PackItem("rt_studio_preview", "", current)) else items
-        val used = mutableSetOf<String>()
-        actual.forEach { item ->
-            val name = item.name.lowercase().replace(Regex("[^a-z0-9_]+"), "_").ifBlank { "icon" }.let {
-                if (it.first().isDigit()) "icon_" + it else it
-            }
-            if (used.add(name)) {
-                zip.putNextEntry(ZipEntry("res/drawable-nodpi/" + name + ".png"))
-                renderIconBitmap(item.design, 512).compress(Bitmap.CompressFormat.PNG, 100, zip)
-                zip.closeEntry()
-            }
+        fun addText(path: String, text: String) {
+            zip.putNextEntry(ZipEntry(path)); zip.write(text.toByteArray(Charsets.UTF_8)); zip.closeEntry()
         }
-        val mappings = actual.filter { it.component.startsWith("ComponentInfo{") && it.component.endsWith("}") }
-        val xml = buildString {
-            append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<resources>\n")
-            actual.forEach { item ->
-                if (item.component.startsWith("ComponentInfo{") && item.component.endsWith("}")) {
-                    val name = item.name.lowercase().replace(Regex("[^a-z0-9_]+"), "_").ifBlank { "icon" }.let { if (it.first().isDigit()) "icon_" + it else it }
-                    append("  <item component=\"").append(item.component.replace("&", "&amp;").replace("\"", "&quot;")).append("\" drawable=\"").append(name).append("\" />\n")
-                }
-            }
-            append("</resources>\n")
+        fun addPng(path: String, icon: IconDesign) {
+            zip.putNextEntry(ZipEntry(path)); renderIconBitmap(icon, 512).compress(Bitmap.CompressFormat.PNG, 100, zip); zip.closeEntry()
         }
-        zip.putNextEntry(ZipEntry("res/xml/appfilter.xml")); zip.write(xml.toByteArray(Charsets.UTF_8)); zip.closeEntry()
-        val readme = "RT Studio icon pack resources\n\nIncludes procedural PNG icons in res/drawable-nodpi and an appfilter.xml mapping for entries with a valid ComponentInfo{package/class}.\nThis archive is a resource bundle, not an installable APK. Launcher compatibility and APK packaging require a launcher-specific Android project/build.\nMapping entries: " + mappings.size + "\n"
-        zip.putNextEntry(ZipEntry("README.txt")); zip.write(readme.toByteArray(Charsets.UTF_8)); zip.closeEntry()
+        addPng("app/src/main/res/drawable-nodpi/rt_pack_launcher.png", namedItems.firstOrNull()?.first?.design ?: current)
+        namedItems.forEach { (item, name) -> addPng("app/src/main/res/drawable-nodpi/" + name + ".png", item.design) }
+        addText("app/src/main/res/xml/appfilter.xml", xml)
+        addText("app/src/main/AndroidManifest.xml", manifest)
+        addText("app/src/main/java/com/rt/iconpack/generated/MainActivity.kt", activitySource)
+        addText("app/build.gradle.kts", appGradle)
+        addText("settings.gradle.kts", settings)
+        addText("build.gradle.kts", "plugins { id(\"com.android.application\") version \"8.8.2\" apply false }\n")
+        addText(".github/workflows/build-apk.yml", workflow)
+        addText("README.md", readme)
     }
 }
