@@ -21,19 +21,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
-      - name: Generate launcher icon from RT Studio SVG
-        run: |
-          command -v convert
-          mkdir -p app/src/main/res/mipmap-mdpi app/src/main/res/mipmap-hdpi app/src/main/res/mipmap-xhdpi app/src/main/res/mipmap-xxhdpi app/src/main/res/mipmap-xxxhdpi
-          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 48x48 -gravity center -extent 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
-          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 72x72 -gravity center -extent 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
-          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 96x96 -gravity center -extent 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 144x144 -gravity center -extent 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
-          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 192x192 -gravity center -extent 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-
-      - name: Install Gradle
+          java-version: "17"      - name: Install Gradle
         run: |
           curl --fail --location --retry 3 https://services.gradle.org/distributions/gradle-8.11.1-bin.zip --output "$RUNNER_TEMP/gradle.zip"
           unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
