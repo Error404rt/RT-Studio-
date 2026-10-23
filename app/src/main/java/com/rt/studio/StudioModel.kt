@@ -14,11 +14,11 @@ import kotlin.random.Random
 
 enum class IconShape(val title: String) { ROUNDED("Скруглённая"), SQUIRCLE("Squircle"), CIRCLE("Круг"), HEXAGON("Шестиугольник"), DIAMOND("Ромб") }
 enum class Glyph(val title: String) { BOLT("Молния"), CAMERA("Камера"), MUSIC("Музыка"), PLAY("Плей"), FOLDER("Папка"), MAIL("Письмо"), SETTINGS("Настройки"), STAR("Звезда"), TERMINAL("Терминал"), GALLERY("Галерея"), HEART("Сердце"), SHIELD("Щит") }
-enum class ElementKind(val title: String) { CIRCLE("Круг"), RECTANGLE("Прямоугольник"), TRIANGLE("Треугольник"), STAR("Звезда"), LINE("Линия"), DIAMOND("Ромб") }
+enum class ElementKind(val title: String) { CIRCLE("Круг"), RECTANGLE("Прямоугольник"), TRIANGLE("Треугольник"), STAR("Звезда"), LINE("Линия"), DIAMOND("Ромб"), PATH("Автотрассировка") }
 data class VectorObject(
     val id: String = java.util.UUID.randomUUID().toString(), val kind: ElementKind = ElementKind.CIRCLE,
     val color: Int = 0xFFFFFFFF.toInt(), val x: Float = .5f, val y: Float = .5f, val scale: Float = 1f,
-    val rotation: Float = 0f, val opacity: Float = 1f, val visible: Boolean = true, val cutout: Boolean = false
+    val rotation: Float = 0f, val opacity: Float = 1f, val visible: Boolean = true, val cutout: Boolean = false, val pathData: String = ""
 )
 
 data class IconDesign(
@@ -48,7 +48,7 @@ fun IconDesign.toJson() = JSONObject().apply {
     put("background", background); put("foreground", foreground); put("accent", accent); put("shape", shape.name); put("glyph", glyph.name)
     put("corner", corner); put("glyphScale", glyphScale); put("rotation", rotation); put("outline", outline)
     put("backgroundVisible", backgroundVisible); put("glyphVisible", glyphVisible); put("accentVisible", accentVisible)
-    put("elements", org.json.JSONArray().apply { elements.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("color", e.color).put("x", e.x).put("y", e.y).put("scale", e.scale).put("rotation", e.rotation).put("opacity", e.opacity).put("visible", e.visible).put("cutout", e.cutout)) } })
+    put("elements", org.json.JSONArray().apply { elements.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("color", e.color).put("x", e.x).put("y", e.y).put("scale", e.scale).put("rotation", e.rotation).put("opacity", e.opacity).put("visible", e.visible).put("cutout", e.cutout).put("pathData", e.pathData)) } })
 }
 fun designFromJson(j: JSONObject) = IconDesign(
     j.optInt("background", 0xFF465D91.toInt()), j.optInt("foreground", -1), j.optInt("accent", 0xFFD9E2FF.toInt()),
@@ -65,7 +65,7 @@ fun designFromJson(j: JSONObject) = IconDesign(
                 kind = runCatching { ElementKind.valueOf(e.optString("kind", "CIRCLE")) }.getOrDefault(ElementKind.CIRCLE),
                 color = e.optInt("color", -1), x = e.optDouble("x", .5).toFloat(), y = e.optDouble("y", .5).toFloat(),
                 scale = e.optDouble("scale", 1.0).toFloat(), rotation = e.optDouble("rotation", 0.0).toFloat(),
-                opacity = e.optDouble("opacity", 1.0).toFloat(), visible = e.optBoolean("visible", true), cutout = e.optBoolean("cutout", false)
+                opacity = e.optDouble("opacity", 1.0).toFloat(), visible = e.optBoolean("visible", true), cutout = e.optBoolean("cutout", false), pathData = e.optString("pathData", "")
             )
         }
     }.getOrDefault(emptyList())
@@ -77,6 +77,24 @@ private fun paint(c: Int, style: Paint.Style = Paint.Style.FILL, stroke: Float =
 private fun polygon(points: List<Pair<Float, Float>>) = Path().apply {
     points.forEachIndexed { i, p -> if (i == 0) moveTo(p.first, p.second) else lineTo(p.first, p.second) }; close()
 }
+private fun simpleSvgPath(data: String): Path = Path().apply {
+    val tokens = Regex("[MLZ]|-?(?:\\d+\\.?\\d*|\\.\\d+)").findAll(data).map { it.value }.toList()
+    var command = ' '
+    var i = 0
+    while (i < tokens.size) {
+        val token = tokens[i++]
+        if (token.length == 1 && token[0].isLetter()) {
+            command = token[0]
+            if (command == 'Z') { close(); continue }
+        } else {
+            val x = token.toFloatOrNull() ?: continue
+            if (i >= tokens.size) break
+            val y = tokens[i++].toFloatOrNull() ?: break
+            when (command) { 'M' -> { moveTo(x, y); command = 'L' }; 'L' -> lineTo(x, y) }
+        }
+    }
+}
+
 private fun starPath() = Path().apply {
     for (i in 0 until 10) { val r = if (i % 2 == 0) 116.0 else 52.0; val a = -Math.PI / 2 + i * Math.PI / 5
         val x = 256 + cos(a) * r; val y = 256 + sin(a) * r
@@ -136,6 +154,7 @@ fun renderIcon(canvas: AndroidCanvas, d: IconDesign, size: Int) {
             }, p)
             ElementKind.LINE -> canvas.drawLine(-95f, 0f, 95f, 0f, paint(element.color, Paint.Style.STROKE, 15f).apply { alpha = (element.opacity.coerceIn(0f, 1f) * 255).toInt(); if (element.cutout) xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) })
             ElementKind.DIAMOND -> canvas.drawPath(polygon(listOf(0f to -90f, 75f to 0f, 0f to 90f, -75f to 0f)), p)
+            ElementKind.PATH -> canvas.drawPath(simpleSvgPath(element.pathData), p)
         }
         canvas.restoreToCount(es)
     }
@@ -181,6 +200,7 @@ fun designToSvg(d: IconDesign): String {
                 ElementKind.STAR -> "<path d=\"M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z\"/>"
                 ElementKind.LINE -> "<path d=\"M-95 0 H95\" fill=\"none\" stroke=\"$color\" stroke-width=\"15\"/>"
                 ElementKind.DIAMOND -> "<path d=\"M0 -90 L75 0 L0 90 L-75 0 Z\"/>"
+                ElementKind.PATH -> "<path d=\\"" + e.pathData + "\\"/>"
             }
             append("<g opacity=\"" + e.opacity.coerceIn(0f, 1f) + "\" transform=\"translate(" + (e.x * 512f) + " " + (e.y * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale + ")\" fill=\"" + color + "\">" + geom + "</g>")
         }

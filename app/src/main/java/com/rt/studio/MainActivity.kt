@@ -2,6 +2,8 @@ package com.rt.studio
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import kotlin.math.abs
+import kotlin.math.atan2
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -142,6 +144,88 @@ private fun readLimited(input: ZipInputStream, maxBytes: Int): ByteArray {
     return out.toByteArray()
 }
 
+private fun loadReferenceBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 1600): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    var sample = 1
+    while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
+    return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+}
+
+private fun traceBitmapToPath(source: Bitmap): String? {
+    val w = 128; val h = 128
+    val bitmap = Bitmap.createScaledBitmap(source, w, h, true)
+    try {
+        val corners = listOf(bitmap.getPixel(1, 1), bitmap.getPixel(w - 2, 1), bitmap.getPixel(1, h - 2), bitmap.getPixel(w - 2, h - 2))
+        val transparentBackground = corners.count { (it ushr 24) < 100 } >= 2
+        val opaqueCorners = corners.filter { (it ushr 24) >= 100 }.ifEmpty { corners }
+        val br = opaqueCorners.map { (it shr 16) and 255 }.average()
+        val bg = opaqueCorners.map { (it shr 8) and 255 }.average()
+        val bb = opaqueCorners.map { it and 255 }.average()
+        val mask = BooleanArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            val c = bitmap.getPixel(x, y)
+            val a = (c ushr 24) and 255
+            val distance = abs(((c shr 16) and 255) - br) + abs(((c shr 8) and 255) - bg) + abs((c and 255) - bb)
+            mask[y * w + x] = a > 55 && (transparentBackground || distance > 66)
+        }
+        val visited = BooleanArray(mask.size)
+        var largest = IntArray(0)
+        val queue = IntArray(mask.size)
+        val dx = intArrayOf(-1, 0, 1, -1, 1, -1, 0, 1)
+        val dy = intArrayOf(-1, -1, -1, 0, 0, 1, 1, 1)
+        for (start in mask.indices) {
+            if (!mask[start] || visited[start]) continue
+            var head = 0; var tail = 0
+            val component = ArrayList<Int>()
+            queue[tail++] = start; visited[start] = true
+            while (head < tail) {
+                val at = queue[head++]; component.add(at)
+                val x = at % w; val y = at / w
+                for (k in 0 until 8) {
+                    val nx = x + dx[k]; val ny = y + dy[k]
+                    if (nx in 0 until w && ny in 0 until h) {
+                        val ni = ny * w + nx
+                        if (mask[ni] && !visited[ni]) { visited[ni] = true; queue[tail++] = ni }
+                    }
+                }
+            }
+            if (component.size > largest.size) largest = component.toIntArray()
+        }
+        if (largest.size < 24) return null
+        val keep = BooleanArray(mask.size)
+        largest.forEach { keep[it] = true }
+        val border = ArrayList<Pair<Int, Int>>()
+        for (index in largest) {
+            val x = index % w; val y = index / w
+            var edge = false
+            for (k in 0 until 8) {
+                val nx = x + dx[k]; val ny = y + dy[k]
+                if (nx !in 0 until w || ny !in 0 until h || !keep[ny * w + nx]) { edge = true; break }
+            }
+            if (edge) border.add(x to y)
+        }
+        if (border.size < 6) return null
+        val minX = border.minOf { it.first }; val maxX = border.maxOf { it.first }
+        val minY = border.minOf { it.second }; val maxY = border.maxOf { it.second }
+        val cx = (minX + maxX) / 2f; val cy = (minY + maxY) / 2f
+        border.sortBy { atan2(it.second - cy, it.first - cx) }
+        val stride = maxOf(1, border.size / 100)
+        val points = border.filterIndexed { index, _ -> index % stride == 0 }.take(140)
+        val scale = 180f / maxOf(1, maxX - minX, maxY - minY)
+        fun fmt(v: Float) = String.format(java.util.Locale.US, "%.1f", v)
+        return buildString {
+            points.forEachIndexed { index, point ->
+                append(if (index == 0) "M" else " L").append(fmt((point.first - cx) * scale)).append(" ").append(fmt((point.second - cy) * scale))
+            }
+            append(" Z")
+        }
+    } finally {
+        if (bitmap !== source) bitmap.recycle()
+    }
+}
+
 private fun inspectArchive(context: android.content.Context, uri: Uri): ArchiveSummary {
     var count = 0
     var hasXml = false
@@ -210,7 +294,7 @@ private fun StudioApp() {
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) runCatching {
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+            loadReferenceBitmap(context, uri)
         }.onSuccess {
             imageReference = it
             if (it != null) status = "Референс загружен: " + it.width + " × " + it.height
@@ -273,6 +357,17 @@ private fun StudioApp() {
                 referenceDetails = referenceDetails, importedNames = importedNames,
                 onImportImage = { imagePicker.launch("image/*") }, onImportPack = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) },
                 onEditor = { tab = StudioTab.EDITOR }, onGenerator = { tab = StudioTab.GENERATOR }, onAdd = { tab = StudioTab.PACK },
+                onTraceImage = {
+                    val source = imageReference
+                    val path = source?.let { traceBitmapToPath(it) }
+                    if (path == null) status = "Не удалось выделить контур. Попробуй изображение с однотонным фоном или прозрачностью."
+                    else {
+                        val traced = VectorObject(kind = ElementKind.PATH, color = design.foreground, pathData = path)
+                        change(design.copy(elements = design.elements + traced))
+                        tab = StudioTab.EDITOR
+                        status = "Контур приближённо трассирован в редактируемый векторный путь. Проверь его геометрию в редакторе."
+                    }
+                },
                 onUseSampleColors = {
                     val colors = studioPalette.shuffled().take(3)
                     change(design.copy(background = colors[0], foreground = colors[1], accent = colors[2]))
@@ -311,7 +406,7 @@ private fun StudioApp() {
 @Composable
 private fun HomeScreen(
     modifier: Modifier, design: IconDesign, image: Bitmap?, status: String, referenceDetails: String, importedNames: List<String>,
-    onImportImage: () -> Unit, onImportPack: () -> Unit, onEditor: () -> Unit, onGenerator: () -> Unit, onAdd: () -> Unit, onUseSampleColors: () -> Unit
+    onImportImage: () -> Unit, onImportPack: () -> Unit, onEditor: () -> Unit, onGenerator: () -> Unit, onAdd: () -> Unit, onTraceImage: () -> Unit, onUseSampleColors: () -> Unit
 ) {
     LazyColumn(modifier, contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -339,6 +434,7 @@ private fun HomeScreen(
                 Text("Изображение-референс", fontWeight = FontWeight.SemiBold)
                 Image(image.asImageBitmap(), contentDescription = "Референс для сравнения", modifier = Modifier.fillMaxWidth().height(180.dp))
                 OutlinedButton(onClick = onUseSampleColors, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Palette, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Применить палитру образцов") }
+                Button(onClick = onTraceImage, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.AutoAwesome, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Автотрассировать контур в вектор") }
             } }
         }
         if (referenceDetails.isNotBlank()) item {
@@ -455,7 +551,7 @@ private fun EditorScreen(
         item {
             Text("Добавляй геометрические слои поверх иконки. Их можно перемещать, масштабировать, вращать, перекрашивать, скрывать и использовать как прозрачные вырезы.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                ElementKind.entries.forEach { kind ->
+                ElementKind.entries.filter { it != ElementKind.PATH }.forEach { kind ->
                     FilterChip(selected = false, onClick = {
                         val element = VectorObject(kind = kind, color = design.foreground)
                         selectedElementId = element.id
