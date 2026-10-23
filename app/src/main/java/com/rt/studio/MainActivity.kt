@@ -97,6 +97,25 @@ import java.util.zip.ZipOutputStream
 
 private enum class StudioTab(val title: String) { HOME("Главная"), EDITOR("Редактор"), GENERATOR("Генератор"), PACK("Набор") }
 private data class ArchiveSummary(val count: Int, val hasAppFilter: Boolean, val names: List<String>, val background: Int?, val foreground: Int?, val accent: Int?, val mappings: Map<String, String>)
+private data class InstalledAppInfo(val label: String, val packageName: String, val activityName: String)
+
+@Suppress("DEPRECATION")
+private fun findLaunchableApps(context: android.content.Context): List<InstalledAppInfo> {
+    val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+    val pm = context.packageManager
+    val resolved = if (android.os.Build.VERSION.SDK_INT >= 33) {
+        pm.queryIntentActivities(intent, android.content.pm.PackageManager.ResolveInfoFlags.of(0))
+    } else {
+        pm.queryIntentActivities(intent, 0)
+    }
+    return resolved.mapNotNull { result ->
+        val activity = result.activityInfo ?: return@mapNotNull null
+        if (activity.packageName == context.packageName) return@mapNotNull null
+        val label = runCatching { result.loadLabel(pm).toString() }.getOrDefault(activity.packageName)
+        InstalledAppInfo(label, activity.packageName, activity.name)
+    }.distinctBy { it.packageName }
+        .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -368,7 +387,7 @@ private fun StudioApp() {
     val packItems = remember { mutableStateListOf<PackItem>().apply { addAll(loadPack(context)) } }
     val undo = remember { mutableStateListOf<IconDesign>() }
     val redo = remember { mutableStateListOf<IconDesign>() }
-    var tab by remember { mutableStateOf(StudioTab.HOME) }
+    val installedApps = remember { findLaunchableApps(context) }\n    var tab by remember { mutableStateOf(StudioTab.HOME) }
     var status by remember { mutableStateOf("Проекты сохраняются на устройстве автоматически.") }
     var imageReference by remember { mutableStateOf<Bitmap?>(null) }
     var originalReference by remember { mutableStateOf<Bitmap?>(null) }
@@ -581,7 +600,22 @@ private fun StudioApp() {
                     else { packItems.add(PackItem(name, packageComponent.trim(), design)); status = "Иконка " + name + " добавлена в набор." }
                 },
                 onDelete = { packItems.removeAt(it) }, onExport = { packExporter.launch("rt-studio-icon-pack-project.zip") },
-                onImport = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) }, status = status
+                onImport = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) },
+                installedApps = installedApps,
+                onGenerateMissingApps = { missing ->
+                    var added = 0
+                    val usedNames = packItems.map { it.name }.toMutableSet()
+                    missing.forEach { app ->
+                        val name = app.packageName.lowercase().replace(Regex("[^a-z0-9_]+"), "_").trim('_').ifBlank { "app_icon" }
+                        val normalized = if (name.first().isDigit()) "icon_" + name else name
+                        if (usedNames.add(normalized)) {
+                            val componentInfo = "ComponentInfo{" + app.packageName + "/" + app.activityName + "}"
+                            packItems.add(PackItem(normalized, componentInfo, designForNamedIcon(app.label + " " + app.packageName, design)))
+                            added++
+                        }
+                    }
+                    status = "Создано отсутствующих иконок: " + added + ". Проверь названия и mappings перед сборкой."
+                }, status = status
             )
         }
     }
@@ -918,8 +952,15 @@ private fun PackScreen(
     modifier: Modifier, design: IconDesign, items: List<PackItem>, packTitle: String, packageId: String,
     onPackTitle: (String) -> Unit, onPackageId: (String) -> Unit, iconName: String, component: String,
     onName: (String) -> Unit, onComponent: (String) -> Unit, onAdd: () -> Unit, onDelete: (Int) -> Unit,
-    onExport: () -> Unit, onImport: () -> Unit, status: String
+    onExport: () -> Unit, onImport: () -> Unit, installedApps: List<InstalledAppInfo>,
+    onGenerateMissingApps: (List<InstalledAppInfo>) -> Unit, status: String
 ) {
+    val mappedPackages = remember(items) {
+        items.mapNotNull { item ->
+            Regex("""ComponentInfo\{([^/}]+)""").find(item.component)?.groupValues?.getOrNull(1)
+        }.toSet()
+    }
+    val missingApps = remember(installedApps, mappedPackages) { installedApps.filter { it.packageName !in mappedPackages } }
     LazyColumn(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Text("Сборщик Icon Pack", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -937,6 +978,26 @@ private fun PackScreen(
                 OutlinedTextField(value = component, onValueChange = onComponent, label = { Text("ComponentInfo (необязательно)") }, placeholder = { Text("ComponentInfo{package/class}") }, supportingText = { Text("Точный компонент приложения, если известен") }, modifier = Modifier.fillMaxWidth(), minLines = 1)
                 Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Collections, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Добавить текущую иконку") }
             } }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .55f))) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Отсутствующие иконки", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    Text("На устройстве найдено приложений с launcher-активностью: " + installedApps.size + ". Без icon-pack mapping: " + missingApps.size + ". Сканирование выполняется локально.", style = MaterialTheme.typography.bodySmall)
+                    if (missingApps.isNotEmpty()) {
+                        Text(missingApps.take(8).joinToString(" · ") { it.label }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Button(onClick = { onGenerateMissingApps(missingApps) }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Сгенерировать все пропуски")
+                        }
+                    } else {
+                        Text("Для всех найденных приложений уже есть mapping.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
