@@ -7,6 +7,7 @@ RT Studio is an Android-first procedural icon design workspace built with Kotlin
 - Live preview with 12 procedural glyphs and 5 backing shapes.
 - Per-icon background, foreground and accent palettes, scaling, rotation, corner radius and outline.
 - Toggleable artwork layers, undo/redo and automatic local project persistence.
+- Additional vector objects: circles, rectangles, triangles, stars, lines and diamonds. Each object has editable position, scale, rotation, opacity, color, visibility, layer order and a transparency-cutout mode.
 - Procedural randomization and reusable style recipes.
 - PNG and editable SVG export for the current icon.
 - Import of an image as a visual reference.

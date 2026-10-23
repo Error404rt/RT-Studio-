@@ -393,6 +393,8 @@ private fun EditorScreen(
     modifier: Modifier, design: IconDesign, undoEnabled: Boolean, redoEnabled: Boolean, onChange: (IconDesign) -> Unit,
     onUndo: () -> Unit, onRedo: () -> Unit, onPng: () -> Unit, onSvg: () -> Unit, onRandom: () -> Unit
 ) {
+    var selectedElementId by remember { mutableStateOf(design.elements.lastOrNull()?.id) }
+    val selectedElement = design.elements.firstOrNull { it.id == selectedElementId }
     LazyColumn(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -448,6 +450,59 @@ private fun EditorScreen(
                 LayerToggle("Декоративные элементы", design.accentVisible) { onChange(design.copy(accentVisible = it)) }
                 LayerToggle("Контур подложки", design.outline) { onChange(design.copy(outline = it)) }
             } }
+        }
+        item { Text("4 · Векторные элементы", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        item {
+            Text("Добавляй геометрические слои поверх иконки. Их можно перемещать, масштабировать, вращать, перекрашивать, скрывать и использовать как прозрачные вырезы.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                ElementKind.entries.forEach { kind ->
+                    FilterChip(selected = false, onClick = {
+                        val element = VectorObject(kind = kind, color = design.foreground)
+                        selectedElementId = element.id
+                        onChange(design.copy(elements = design.elements + element))
+                    }, label = { Text(kind.title) })
+                }
+            }
+        }
+        if (design.elements.isEmpty()) item {
+            Text("Нет дополнительных векторных слоёв. Добавь круг, линию, звезду или другую форму выше.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+        itemsIndexed(design.elements, key = { _, element -> element.id }) { index, element ->
+            Card(onClick = { selectedElementId = element.id }, colors = CardDefaults.cardColors(containerColor = if (element.id == selectedElementId) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerLow)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Checkbox(checked = element.visible, onCheckedChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == element.id) it.copy(visible = value) else it })) })
+                    Column(Modifier.weight(1f).clickable { selectedElementId = element.id }) {
+                        Text(element.kind.title, fontWeight = FontWeight.SemiBold)
+                        Text(if (element.cutout) "Прозрачное отверстие" else "Векторный объект", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClick = {
+                        if (index > 0) { val list = design.elements.toMutableList(); val previous = list[index - 1]; list[index - 1] = list[index]; list[index] = previous; onChange(design.copy(elements = list)) }
+                    }, enabled = index > 0) { Text("↑") }
+                    IconButton(onClick = {
+                        if (index < design.elements.lastIndex) { val list = design.elements.toMutableList(); val next = list[index + 1]; list[index + 1] = list[index]; list[index] = next; onChange(design.copy(elements = list)) }
+                    }, enabled = index < design.elements.lastIndex) { Text("↓") }
+                    IconButton(onClick = { onChange(design.copy(elements = design.elements.filterNot { it.id == element.id })); if (selectedElementId == element.id) selectedElementId = null }) { Text("×", style = MaterialTheme.typography.titleLarge) }
+                }
+            }
+        }
+        if (selectedElement != null) item {
+            Card { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("Параметры слоя: " + selectedElement.kind.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Позиция X: " + (selectedElement.x * 100).toInt() + "%", fontWeight = FontWeight.SemiBold)
+                Slider(value = selectedElement.x, onValueChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(x = value) else it })) }, valueRange = .08f.. .92f)
+                Text("Позиция Y: " + (selectedElement.y * 100).toInt() + "%", fontWeight = FontWeight.SemiBold)
+                Slider(value = selectedElement.y, onValueChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(y = value) else it })) }, valueRange = .08f.. .92f)
+                Text("Масштаб: " + (selectedElement.scale * 100).toInt() + "%", fontWeight = FontWeight.SemiBold)
+                Slider(value = selectedElement.scale, onValueChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(scale = value) else it })) }, valueRange = .15f..2.5f)
+                Text("Поворот: " + selectedElement.rotation.toInt() + "°", fontWeight = FontWeight.SemiBold)
+                Slider(value = selectedElement.rotation, onValueChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(rotation = value) else it })) }, valueRange = -180f..180f)
+                Text("Непрозрачность: " + (selectedElement.opacity * 100).toInt() + "%", fontWeight = FontWeight.SemiBold)
+                Slider(value = selectedElement.opacity, onValueChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(opacity = value) else it })) }, valueRange = 0f..1f)
+                LayerToggle("Вырезать прозрачное отверстие", selectedElement.cutout) { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(cutout = value) else it })) }
+            } }
+        }
+        if (selectedElement != null) item {
+            ColorPicker("Цвет выбранного слоя", selectedElement.color) { color -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(color = color) else it })) }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

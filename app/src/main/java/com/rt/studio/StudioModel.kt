@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import org.json.JSONObject
 import kotlin.math.cos
@@ -12,12 +14,18 @@ import kotlin.random.Random
 
 enum class IconShape(val title: String) { ROUNDED("Скруглённая"), SQUIRCLE("Squircle"), CIRCLE("Круг"), HEXAGON("Шестиугольник"), DIAMOND("Ромб") }
 enum class Glyph(val title: String) { BOLT("Молния"), CAMERA("Камера"), MUSIC("Музыка"), PLAY("Плей"), FOLDER("Папка"), MAIL("Письмо"), SETTINGS("Настройки"), STAR("Звезда"), TERMINAL("Терминал"), GALLERY("Галерея"), HEART("Сердце"), SHIELD("Щит") }
+enum class ElementKind(val title: String) { CIRCLE("Круг"), RECTANGLE("Прямоугольник"), TRIANGLE("Треугольник"), STAR("Звезда"), LINE("Линия"), DIAMOND("Ромб") }
+data class VectorObject(
+    val id: String = java.util.UUID.randomUUID().toString(), val kind: ElementKind = ElementKind.CIRCLE,
+    val color: Int = 0xFFFFFFFF.toInt(), val x: Float = .5f, val y: Float = .5f, val scale: Float = 1f,
+    val rotation: Float = 0f, val opacity: Float = 1f, val visible: Boolean = true, val cutout: Boolean = false
+)
 
 data class IconDesign(
     val background: Int = 0xFF465D91.toInt(), val foreground: Int = 0xFFFFFFFF.toInt(), val accent: Int = 0xFFD9E2FF.toInt(),
     val shape: IconShape = IconShape.SQUIRCLE, val glyph: Glyph = Glyph.BOLT,
     val corner: Float = 0.25f, val glyphScale: Float = 1f, val rotation: Float = 0f,
-    val outline: Boolean = false, val backgroundVisible: Boolean = true, val glyphVisible: Boolean = true, val accentVisible: Boolean = true
+    val outline: Boolean = false, val backgroundVisible: Boolean = true, val glyphVisible: Boolean = true, val accentVisible: Boolean = true, val elements: List<VectorObject> = emptyList()
 )
 data class PackItem(val name: String, val component: String, val design: IconDesign)
 
@@ -40,13 +48,27 @@ fun IconDesign.toJson() = JSONObject().apply {
     put("background", background); put("foreground", foreground); put("accent", accent); put("shape", shape.name); put("glyph", glyph.name)
     put("corner", corner); put("glyphScale", glyphScale); put("rotation", rotation); put("outline", outline)
     put("backgroundVisible", backgroundVisible); put("glyphVisible", glyphVisible); put("accentVisible", accentVisible)
+    put("elements", org.json.JSONArray().apply { elements.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("color", e.color).put("x", e.x).put("y", e.y).put("scale", e.scale).put("rotation", e.rotation).put("opacity", e.opacity).put("visible", e.visible).put("cutout", e.cutout)) } })
 }
 fun designFromJson(j: JSONObject) = IconDesign(
     j.optInt("background", 0xFF465D91.toInt()), j.optInt("foreground", -1), j.optInt("accent", 0xFFD9E2FF.toInt()),
     runCatching { IconShape.valueOf(j.optString("shape", "SQUIRCLE")) }.getOrDefault(IconShape.SQUIRCLE),
     runCatching { Glyph.valueOf(j.optString("glyph", "BOLT")) }.getOrDefault(Glyph.BOLT),
     j.optDouble("corner", .25).toFloat(), j.optDouble("glyphScale", 1.0).toFloat(), j.optDouble("rotation", 0.0).toFloat(),
-    j.optBoolean("outline", false), j.optBoolean("backgroundVisible", true), j.optBoolean("glyphVisible", true), j.optBoolean("accentVisible", true)
+    j.optBoolean("outline", false), j.optBoolean("backgroundVisible", true), j.optBoolean("glyphVisible", true), j.optBoolean("accentVisible", true),
+    runCatching {
+        val a = j.optJSONArray("elements") ?: org.json.JSONArray()
+        (0 until a.length()).map { i ->
+            val e = a.getJSONObject(i)
+            VectorObject(
+                id = e.optString("id", java.util.UUID.randomUUID().toString()),
+                kind = runCatching { ElementKind.valueOf(e.optString("kind", "CIRCLE")) }.getOrDefault(ElementKind.CIRCLE),
+                color = e.optInt("color", -1), x = e.optDouble("x", .5).toFloat(), y = e.optDouble("y", .5).toFloat(),
+                scale = e.optDouble("scale", 1.0).toFloat(), rotation = e.optDouble("rotation", 0.0).toFloat(),
+                opacity = e.optDouble("opacity", 1.0).toFloat(), visible = e.optBoolean("visible", true), cutout = e.optBoolean("cutout", false)
+            )
+        }
+    }.getOrDefault(emptyList())
 )
 
 private fun paint(c: Int, style: Paint.Style = Paint.Style.FILL, stroke: Float = 12f) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -97,6 +119,26 @@ fun renderIcon(canvas: AndroidCanvas, d: IconDesign, size: Int) {
         }
         canvas.restoreToCount(gs)
     }
+    d.elements.filter { it.visible }.forEach { element ->
+        val es = canvas.save()
+        canvas.translate(element.x.coerceIn(0f, 1f) * 512f, element.y.coerceIn(0f, 1f) * 512f)
+        canvas.rotate(element.rotation)
+        canvas.scale(element.scale.coerceIn(.15f, 2.5f), element.scale.coerceIn(.15f, 2.5f))
+        val p = paint(element.color).apply { alpha = (element.opacity.coerceIn(0f, 1f) * 255).toInt() }
+        if (element.cutout) { p.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR); p.color = android.graphics.Color.TRANSPARENT; p.alpha = 255 }
+        when (element.kind) {
+            ElementKind.CIRCLE -> canvas.drawCircle(0f, 0f, 76f, p)
+            ElementKind.RECTANGLE -> canvas.drawRoundRect(RectF(-78f, -58f, 78f, 58f), 10f, 10f, p)
+            ElementKind.TRIANGLE -> canvas.drawPath(polygon(listOf(0f to -88f, 78f to 65f, -78f to 65f)), p)
+            ElementKind.STAR -> canvas.drawPath(Path().apply {
+                for (i in 0 until 10) { val rr = if (i % 2 == 0) 86.0 else 39.0; val a = -Math.PI / 2 + i * Math.PI / 5
+                    val x = cos(a) * rr; val y = sin(a) * rr; if (i == 0) moveTo(x.toFloat(), y.toFloat()) else lineTo(x.toFloat(), y.toFloat()) }; close()
+            }, p)
+            ElementKind.LINE -> canvas.drawLine(-95f, 0f, 95f, 0f, paint(element.color, Paint.Style.STROKE, 15f).apply { alpha = (element.opacity.coerceIn(0f, 1f) * 255).toInt(); if (element.cutout) xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) })
+            ElementKind.DIAMOND -> canvas.drawPath(polygon(listOf(0f to -90f, 75f to 0f, 0f to 90f, -75f to 0f)), p)
+        }
+        canvas.restoreToCount(es)
+    }
     canvas.restoreToCount(top)
 }
 fun renderIconBitmap(design: IconDesign, size: Int = 512): Bitmap = Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888).also { renderIcon(AndroidCanvas(it),design,size) }
@@ -130,6 +172,18 @@ fun designToSvg(d: IconDesign): String {
         if(d.backgroundVisible) { append("<g fill=\"$bg\">$shape</g>"); if(d.outline) append("<g fill=\"none\" stroke=\"$ac\" stroke-width=\"9\">$shape</g>") }
         if(d.accentVisible) append("<g fill=\"$ac\"><circle cx=\"394\" cy=\"120\" r=\"13\"/><circle cx=\"118\" cy=\"390\" r=\"8\"/><circle cx=\"395\" cy=\"388\" r=\"6\"/></g>")
         if(d.glyphVisible) append("<g fill=\"$fg\" transform=\"rotate(" + d.rotation + " 256 256) translate(256 256) scale(" + d.glyphScale + ") translate(-256 -256)\">$g</g>")
+        d.elements.filter { it.visible }.forEach { e ->
+            val color = if (e.cutout) bg else hex(e.color)
+            val geom = when (e.kind) {
+                ElementKind.CIRCLE -> "<circle cx=\"0\" cy=\"0\" r=\"76\"/>"
+                ElementKind.RECTANGLE -> "<rect x=\"-78\" y=\"-58\" width=\"156\" height=\"116\" rx=\"10\"/>"
+                ElementKind.TRIANGLE -> "<path d=\"M0 -88 L78 65 L-78 65 Z\"/>"
+                ElementKind.STAR -> "<path d=\"M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z\"/>"
+                ElementKind.LINE -> "<path d=\"M-95 0 H95\" fill=\"none\" stroke=\"$color\" stroke-width=\"15\"/>"
+                ElementKind.DIAMOND -> "<path d=\"M0 -90 L75 0 L0 90 L-75 0 Z\"/>"
+            }
+            append("<g opacity=\"" + e.opacity.coerceIn(0f, 1f) + "\" transform=\"translate(" + (e.x * 512f) + " " + (e.y * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale + ")\" fill=\"" + color + "\">" + geom + "</g>")
+        }
         append("</svg>")
     }
 }
