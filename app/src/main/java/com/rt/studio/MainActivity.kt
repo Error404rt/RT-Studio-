@@ -159,6 +159,44 @@ private fun cropReferenceSquare(source: Bitmap): Bitmap {
     return Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
 }
 
+private fun rotateReference(source: Bitmap, degrees: Float): Bitmap {
+    val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+    return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+}
+
+private fun flipReference(source: Bitmap): Bitmap {
+    val matrix = android.graphics.Matrix().apply { postScale(-1f, 1f, source.width / 2f, source.height / 2f) }
+    return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+}
+
+private fun adjustReference(
+    source: Bitmap, brightness: Float, contrast: Float, saturation: Float, grayscale: Boolean, invert: Boolean
+): Bitmap {
+    val c = contrast.coerceIn(.25f, 2.5f)
+    val offset = 128f * (1f - c) + brightness.coerceIn(-100f, 100f)
+    val matrix = android.graphics.ColorMatrix(floatArrayOf(
+        c, 0f, 0f, 0f, offset,
+        0f, c, 0f, 0f, offset,
+        0f, 0f, c, 0f, offset,
+        0f, 0f, 0f, 1f, 0f
+    ))
+    matrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(if (grayscale) 0f else saturation.coerceIn(0f, 2f)) })
+    if (invert) matrix.postConcat(android.graphics.ColorMatrix(floatArrayOf(
+        -1f, 0f, 0f, 0f, 255f,
+        0f, -1f, 0f, 0f, 255f,
+        0f, 0f, -1f, 0f, 255f,
+        0f, 0f, 0f, 1f, 0f
+    )))
+    val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(output)
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
+        isFilterBitmap = true
+    }
+    canvas.drawBitmap(source, 0f, 0f, paint)
+    return output
+}
+
 private fun removeSolidBackground(source: Bitmap, tolerance: Int = 110): Bitmap {
     val width = source.width
     val height = source.height
@@ -333,6 +371,12 @@ private fun StudioApp() {
     var tab by remember { mutableStateOf(StudioTab.HOME) }
     var status by remember { mutableStateOf("Проекты сохраняются на устройстве автоматически.") }
     var imageReference by remember { mutableStateOf<Bitmap?>(null) }
+    var originalReference by remember { mutableStateOf<Bitmap?>(null) }
+    var referenceBrightness by remember { mutableStateOf(0f) }
+    var referenceContrast by remember { mutableStateOf(1f) }
+    var referenceSaturation by remember { mutableStateOf(1f) }
+    var referenceGrayscale by remember { mutableStateOf(false) }
+    var referenceInvert by remember { mutableStateOf(false) }
     var packIconName by remember { mutableStateOf("my_icon") }
     val prefs = remember { context.getSharedPreferences("rt_studio", 0) }
     var packTitle by remember { mutableStateOf(prefs.getString("packTitle", "RT Studio Icon Pack") ?: "RT Studio Icon Pack") }
@@ -357,6 +401,9 @@ private fun StudioApp() {
             loadReferenceBitmap(context, uri)
         }.onSuccess {
             imageReference = it
+            originalReference = it
+            referenceBrightness = 0f; referenceContrast = 1f; referenceSaturation = 1f
+            referenceGrayscale = false; referenceInvert = false
             if (it != null) status = "Референс загружен: " + it.width + " × " + it.height
         }.onFailure { status = "Ошибка импорта изображения: " + (it.localizedMessage ?: "неизвестная ошибка") }
     }
@@ -482,6 +529,15 @@ private fun StudioApp() {
                 onExportReference = { referenceToExport = imageReference; referenceExporter.launch("reference-processed.png") },
                 onCropReference = { imageReference?.let { imageReference = cropReferenceSquare(it); status = "Референс обрезан до центрального квадрата." } },
                 onRemoveBackground = { imageReference?.let { imageReference = removeSolidBackground(it, backgroundTolerance.toInt()); status = "Попытка удаления однотонного фона завершена. Проверь края и экспортируй PNG." } },
+                onRotateReference = { imageReference?.let { imageReference = rotateReference(it, 90f); status = "Референс повёрнут на 90°." } },
+                onFlipReference = { imageReference?.let { imageReference = flipReference(it); status = "Референс отражён по горизонтали." } },
+                onResetReference = { originalReference?.let { imageReference = it; status = "Референс сброшен к исходному изображению." } },
+                onApplyAdjustments = { imageReference?.let { imageReference = adjustReference(it, referenceBrightness, referenceContrast, referenceSaturation, referenceGrayscale, referenceInvert); status = "Яркость, контраст и цветовые параметры применены." } },
+                referenceBrightness = referenceBrightness, onReferenceBrightness = { referenceBrightness = it },
+                referenceContrast = referenceContrast, onReferenceContrast = { referenceContrast = it },
+                referenceSaturation = referenceSaturation, onReferenceSaturation = { referenceSaturation = it },
+                referenceGrayscale = referenceGrayscale, onReferenceGrayscale = { referenceGrayscale = it },
+                referenceInvert = referenceInvert, onReferenceInvert = { referenceInvert = it },
                 backgroundTolerance = backgroundTolerance, onBackgroundTolerance = { backgroundTolerance = it },
                 onEditor = { tab = StudioTab.EDITOR }, onGenerator = { tab = StudioTab.GENERATOR }, onAdd = { tab = StudioTab.PACK },
                 onTraceImage = {
@@ -536,6 +592,12 @@ private fun HomeScreen(
     modifier: Modifier, design: IconDesign, image: Bitmap?, status: String, referenceDetails: String, importedNames: List<String>,
     onImportImage: () -> Unit, onImportPack: () -> Unit, onSaveProject: () -> Unit, onLoadProject: () -> Unit, onGenerateFromReference: () -> Unit,
     onExportReference: () -> Unit, onCropReference: () -> Unit, onRemoveBackground: () -> Unit,
+    onRotateReference: () -> Unit, onFlipReference: () -> Unit, onResetReference: () -> Unit, onApplyAdjustments: () -> Unit,
+    referenceBrightness: Float, onReferenceBrightness: (Float) -> Unit,
+    referenceContrast: Float, onReferenceContrast: (Float) -> Unit,
+    referenceSaturation: Float, onReferenceSaturation: (Float) -> Unit,
+    referenceGrayscale: Boolean, onReferenceGrayscale: (Boolean) -> Unit,
+    referenceInvert: Boolean, onReferenceInvert: (Boolean) -> Unit,
     backgroundTolerance: Float, onBackgroundTolerance: (Float) -> Unit,
     onEditor: () -> Unit, onGenerator: () -> Unit, onAdd: () -> Unit, onTraceImage: () -> Unit, onUseSampleColors: () -> Unit
 ) {
@@ -568,6 +630,27 @@ private fun HomeScreen(
                 Slider(value = backgroundTolerance, onValueChange = onBackgroundTolerance, valueRange = 30f..240f)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onCropReference) { Text("Кадрировать") }
+                    OutlinedButton(onClick = onRotateReference) { Text("Повернуть 90°") }
+                    OutlinedButton(onClick = onFlipReference) { Text("Отразить") }
+                }
+                Text("Яркость: " + referenceBrightness.toInt(), style = MaterialTheme.typography.bodySmall)
+                Slider(value = referenceBrightness, onValueChange = onReferenceBrightness, valueRange = -100f..100f)
+                Text("Контраст: " + String.format(java.util.Locale.US, "%.2f", referenceContrast), style = MaterialTheme.typography.bodySmall)
+                Slider(value = referenceContrast, onValueChange = onReferenceContrast, valueRange = .25f..2.5f)
+                Text("Насыщенность: " + String.format(java.util.Locale.US, "%.2f", referenceSaturation), style = MaterialTheme.typography.bodySmall)
+                Slider(value = referenceSaturation, onValueChange = onReferenceSaturation, valueRange = 0f..2f)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = referenceGrayscale, onCheckedChange = onReferenceGrayscale)
+                    Text("Чёрно-белое")
+                    Spacer(Modifier.width(10.dp))
+                    Checkbox(checked = referenceInvert, onCheckedChange = onReferenceInvert)
+                    Text("Инверсия")
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onApplyAdjustments, modifier = Modifier.weight(1f)) { Text("Применить цвет") }
+                    OutlinedButton(onClick = onResetReference, modifier = Modifier.weight(1f)) { Text("Сбросить") }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onRemoveBackground) { Text("Удалить фон") }
                     OutlinedButton(onClick = onExportReference) { Text("Экспорт PNG") }
                 }
