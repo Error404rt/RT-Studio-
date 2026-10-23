@@ -147,10 +147,47 @@ private fun readLimited(input: ZipInputStream, maxBytes: Int): ByteArray {
 private fun loadReferenceBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 1600): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
     var sample = 1
     while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) sample *= 2
     val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
     return context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+}
+
+private fun cropReferenceSquare(source: Bitmap): Bitmap {
+    val side = minOf(source.width, source.height)
+    return Bitmap.createBitmap(source, (source.width - side) / 2, (source.height - side) / 2, side, side)
+}
+
+private fun removeSolidBackground(source: Bitmap, tolerance: Int = 110): Bitmap {
+    val width = source.width
+    val height = source.height
+    val result = source.copy(Bitmap.Config.ARGB_8888, true)
+    val pixels = IntArray(width * height)
+    result.getPixels(pixels, 0, width, 0, 0, width, height)
+    val cornerIndices = listOf(0, width - 1, (height - 1) * width, height * width - 1)
+    val corners = cornerIndices.map { pixels[it] }
+    if (corners.count { ((it ushr 24) and 255) < 100 } >= 2) return result
+    val opaqueCorners = corners.filter { ((it ushr 24) and 255) >= 100 }.ifEmpty { corners }
+    val red = opaqueCorners.map { (it shr 16) and 255 }.average()
+    val green = opaqueCorners.map { (it shr 8) and 255 }.average()
+    val blue = opaqueCorners.map { it and 255 }.average()
+    val feather = (tolerance * 0.45f).coerceAtLeast(1f)
+    for (i in pixels.indices) {
+        val color = pixels[i]
+        val alpha = (color ushr 24) and 255
+        if (alpha == 0) continue
+        val distance = abs(((color shr 16) and 255) - red) +
+            abs(((color shr 8) and 255) - green) + abs((color and 255) - blue)
+        if (distance <= tolerance) {
+            pixels[i] = color and 0x00FFFFFF
+        } else if (distance < tolerance + feather) {
+            val edgeAlpha = (((distance - tolerance) / feather) * alpha).toInt().coerceIn(0, 255)
+            pixels[i] = (color and 0x00FFFFFF) or (edgeAlpha shl 24)
+        }
+    }
+    result.setPixels(pixels, 0, width, 0, 0, width, height)
+    return result
 }
 
 private fun traceBitmapToPath(source: Bitmap): String? {
@@ -328,6 +365,51 @@ private fun StudioApp() {
             .onSuccess { status = "Проект Icon Pack с PNG, appfilter.xml и workflow экспортирован. Загрузите его в GitHub, чтобы получить APK через Actions." }
             .onFailure { status = "Ошибка экспорта набора: " + it.message }
     }
+    val projectExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) runCatching {
+            val root = JSONObject().put("format", "rt-studio-project").put("version", 1)
+                .put("design", design.toJson()).put("packTitle", packTitle).put("packageId", packApplicationId)
+            root.put("pack", JSONArray().apply {
+                packItems.forEach { item -> put(JSONObject().put("name", item.name).put("component", item.component).put("design", item.design.toJson())) }
+            })
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter(Charsets.UTF_8)?.use { it.write(root.toString(2)) }
+                ?: error("Не удалось открыть файл проекта")
+        }.onSuccess { status = "Проект RT Studio сохранён в JSON." }
+            .onFailure { status = "Ошибка сохранения проекта: " + it.message }
+    }
+    val projectImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching {
+            val text = context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                ?: error("Не удалось открыть файл проекта")
+            require(text.length <= 5_000_000) { "Файл проекта слишком большой" }
+            val root = JSONObject(text)
+            require(root.optString("format") == "rt-studio-project") { "Это не проект RT Studio" }
+            val importedDesign = designFromJson(root.getJSONObject("design"))
+            val importedPack = root.optJSONArray("pack") ?: JSONArray()
+            val items = (0 until importedPack.length()).map { index ->
+                val item = importedPack.getJSONObject(index)
+                PackItem(item.optString("name", "icon_$index"), item.optString("component", ""), designFromJson(item.getJSONObject("design")))
+            }
+            Triple(root, importedDesign, items)
+        }.onSuccess { result ->
+            change(result.second)
+            packItems.clear()
+            packItems.addAll(result.third)
+            packTitle = result.first.optString("packTitle", "RT Studio Icon Pack")
+            packApplicationId = result.first.optString("packageId", "com.rt.iconpack.generated")
+            status = "Проект импортирован: " + result.third.size + " иконок в наборе."
+        }.onFailure { status = "Ошибка импорта проекта: " + it.message }
+    }
+    var referenceToExport by remember { mutableStateOf<Bitmap?>(null) }
+    val referenceExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+        if (uri != null) runCatching {
+            val image = referenceToExport ?: error("Нет изображения для экспорта")
+            context.contentResolver.openOutputStream(uri)?.use { output -> image.compress(Bitmap.CompressFormat.PNG, 100, output) }
+                ?: error("Не удалось открыть файл для записи")
+        }.onSuccess { status = "Обработанный референс экспортирован в PNG." }
+            .onFailure { status = "Ошибка экспорта референса: " + it.message }
+    }
+    var backgroundTolerance by remember { mutableStateOf(110f) }
 
     Scaffold(
         topBar = {
@@ -335,6 +417,8 @@ private fun StudioApp() {
                 title = { Column { Text("RT Studio", fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.6).sp); Text("VECTOR ICON WORKSPACE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.2.sp) } },
                 actions = {
                     IconButton(onClick = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) }) { Icon(Icons.Rounded.FileOpen, contentDescription = "Импортировать icon pack") }
+                    IconButton(onClick = { projectImporter.launch(arrayOf("application/json", "text/*", "*/*")) }) { Icon(Icons.Rounded.FileOpen, contentDescription = "Открыть проект") }
+                    IconButton(onClick = { projectExporter.launch("rt-studio-project.json") }) { Icon(Icons.Rounded.Save, contentDescription = "Сохранить проект") }
                     IconButton(onClick = { pngExporter.launch("rt-icon.png") }) { Icon(Icons.Rounded.Download, contentDescription = "Экспорт PNG") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -359,6 +443,11 @@ private fun StudioApp() {
                 modifier = Modifier.fillMaxSize().padding(padding), design = design, image = imageReference, status = status,
                 referenceDetails = referenceDetails, importedNames = importedNames,
                 onImportImage = { imagePicker.launch("image/*") }, onImportPack = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) },
+                onSaveProject = { projectExporter.launch("rt-studio-project.json") }, onLoadProject = { projectImporter.launch(arrayOf("application/json", "text/*", "*/*")) },
+                onExportReference = { referenceToExport = imageReference; referenceExporter.launch("reference-processed.png") },
+                onCropReference = { imageReference?.let { imageReference = cropReferenceSquare(it); status = "Референс обрезан до центрального квадрата." } },
+                onRemoveBackground = { imageReference?.let { imageReference = removeSolidBackground(it, backgroundTolerance.toInt()); status = "Попытка удаления однотонного фона завершена. Проверь края и экспортируй PNG." } },
+                backgroundTolerance = backgroundTolerance, onBackgroundTolerance = { backgroundTolerance = it },
                 onEditor = { tab = StudioTab.EDITOR }, onGenerator = { tab = StudioTab.GENERATOR }, onAdd = { tab = StudioTab.PACK },
                 onTraceImage = {
                     val source = imageReference
@@ -410,7 +499,10 @@ private fun StudioApp() {
 @Composable
 private fun HomeScreen(
     modifier: Modifier, design: IconDesign, image: Bitmap?, status: String, referenceDetails: String, importedNames: List<String>,
-    onImportImage: () -> Unit, onImportPack: () -> Unit, onEditor: () -> Unit, onGenerator: () -> Unit, onAdd: () -> Unit, onTraceImage: () -> Unit, onUseSampleColors: () -> Unit
+    onImportImage: () -> Unit, onImportPack: () -> Unit, onSaveProject: () -> Unit, onLoadProject: () -> Unit,
+    onExportReference: () -> Unit, onCropReference: () -> Unit, onRemoveBackground: () -> Unit,
+    backgroundTolerance: Float, onBackgroundTolerance: (Float) -> Unit,
+    onEditor: () -> Unit, onGenerator: () -> Unit, onAdd: () -> Unit, onTraceImage: () -> Unit, onUseSampleColors: () -> Unit
 ) {
     LazyColumn(modifier, contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -437,8 +529,19 @@ private fun HomeScreen(
             Card { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Изображение-референс", fontWeight = FontWeight.SemiBold)
                 Image(image.asImageBitmap(), contentDescription = "Референс для сравнения", modifier = Modifier.fillMaxWidth().height(180.dp))
+                Text("Порог удаления фона: " + backgroundTolerance.toInt(), style = MaterialTheme.typography.bodySmall)
+                Slider(value = backgroundTolerance, onValueChange = onBackgroundTolerance, valueRange = 30f..240f)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onCropReference) { Text("Кадрировать") }
+                    OutlinedButton(onClick = onRemoveBackground) { Text("Удалить фон") }
+                    OutlinedButton(onClick = onExportReference) { Text("Экспорт PNG") }
+                }
                 OutlinedButton(onClick = onUseSampleColors, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Palette, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Применить палитру образцов") }
                 Button(onClick = onTraceImage, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.AutoAwesome, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("Автотрассировать контур в вектор") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onSaveProject, modifier = Modifier.weight(1f)) { Icon(Icons.Rounded.Save, contentDescription = null); Spacer(Modifier.width(4.dp)); Text("Проект JSON") }
+                    OutlinedButton(onClick = onLoadProject, modifier = Modifier.weight(1f)) { Icon(Icons.Rounded.FileOpen, contentDescription = null); Spacer(Modifier.width(4.dp)); Text("Открыть JSON") }
+                }
             } }
         }
         if (referenceDetails.isNotBlank()) item {
@@ -599,6 +702,17 @@ private fun EditorScreen(
                 Text("Непрозрачность: " + (selectedElement.opacity * 100).toInt() + "%", fontWeight = FontWeight.SemiBold)
                 Slider(value = selectedElement.opacity, onValueChange = { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(opacity = value) else it })) }, valueRange = 0f..1f)
                 LayerToggle("Вырезать прозрачное отверстие", selectedElement.cutout) { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(cutout = value) else it })) }
+            } }
+        }
+        if (selectedElement?.kind == ElementKind.PATH) item {
+            Card { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Редактирование SVG-контура", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Поддерживаются команды M, L и Z. Изменение координат здесь меняет форму векторного слоя.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = selectedElement.pathData,
+                    onValueChange = { path -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(pathData = path) else it })) },
+                    label = { Text("SVG pathData") }, modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8
+                )
             } }
         }
         if (selectedElement != null) item {
