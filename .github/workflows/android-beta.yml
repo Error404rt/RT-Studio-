@@ -23,9 +23,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Generate launcher icon from RT Studio SVG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          mkdir -p app/src/main/res/mipmap-mdpi app/src/main/res/mipmap-hdpi app/src/main/res/mipmap-xhdpi app/src/main/res/mipmap-xxhdpi app/src/main/res/mipmap-xxxhdpi
+          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
+          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          convert -background '#101010' app/src/main/assets/rt-studio-logo.svg -resize 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
       - name: Install Gradle
         run: |
-          curl --fail --location --retry 3             https://services.gradle.org/distributions/gradle-8.11.1-bin.zip             --output "$RUNNER_TEMP/gradle.zip"
+          curl --fail --location --retry 3 https://services.gradle.org/distributions/gradle-8.11.1-bin.zip --output "$RUNNER_TEMP/gradle.zip"
           unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/gradle-8.11.1/bin" >> "$GITHUB_PATH"
 
@@ -41,7 +52,6 @@ jobs:
       - name: Verify APK exists
         run: test -s app/build/outputs/apk/debug/app-debug.apk
 
-
       - name: Verify APK contents
         shell: bash
         run: |
@@ -50,6 +60,7 @@ jobs:
           test -n "$AAPT"
           BADGING="$("$AAPT" dump badging "$APK")"
           printf '%s\n' "$BADGING" | grep -F "application-label:'RTStudio'"
+          printf '%s\n' "$BADGING" | grep -F "application-icon-"
           if unzip -p "$APK" classes.dex | strings | grep -E 'Твоя иконка\.|Твой стиль\.|Создавай, редактируй и собирай собственные наборы иконок Android\.'; then
             echo "Removed home-screen slogan is still present in the compiled APK."
             exit 1
