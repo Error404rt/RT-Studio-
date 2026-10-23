@@ -221,35 +221,36 @@ fun designToSvg(d: IconDesign): String {
     }
     val baseMarkup = buildString {
         if (d.backgroundVisible) {
-            append("<g fill=\\"$bg\\">$shape</g>")
-            if (d.outline) append("<g fill=\\"none\\" stroke=\\"$ac\\" stroke-width=\\"9\\">$shape</g>")
+            append("""<g fill="$bg">$shape</g>""")
+            if (d.outline) append("""<g fill="none" stroke="$ac" stroke-width="9">$shape</g>""")
         }
-        if (d.accentVisible) append("<g fill=\\"$ac\\"><circle cx=\\"394\\" cy=\\"120\\" r=\\"13\\"/><circle cx=\\"118\\" cy=\\"390\\" r=\\"8\\"/><circle cx=\\"395\\" cy=\\"388\\" r=\\"6\\"/></g>")
-        if (d.glyphVisible) append("<g fill=\\"$fg\\" transform=\\"rotate(" + d.rotation + " 256 256) translate(256 256) scale(" + d.glyphScale.coerceIn(.45f, 1.5f) + ") translate(-256 -256)\\">$g</g>")
+        if (d.accentVisible) append("""<g fill="$ac"><circle cx="394" cy="120" r="13"/><circle cx="118" cy="390" r="8"/><circle cx="395" cy="388" r="6"/></g>""")
+        if (d.glyphVisible) {
+            append("""<g fill="$fg" transform="rotate(${d.rotation} 256 256) translate(256 256) scale(${d.glyphScale.coerceIn(.45f, 1.5f)}) translate(-256 -256)">$g</g>""")
+        }
     }
     val maskDefinitions = StringBuilder()
     var content = baseMarkup
     d.elements.filter { it.visible }.forEachIndexed { index, e ->
         val color = hex(e.color)
         val geom = when (e.kind) {
-            ElementKind.CIRCLE -> "<circle cx=\\"0\\" cy=\\"0\\" r=\\"76\\"/>"
-            ElementKind.RECTANGLE -> "<rect x=\\"-78\\" y=\\"-58\\" width=\\"156\\" height=\\"116\\" rx=\\"10\\"/>"
-            ElementKind.TRIANGLE -> "<path d=\\"M0 -88 L78 65 L-78 65 Z\\"/>"
-            ElementKind.STAR -> "<path d=\\"M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z\\"/>"
-            ElementKind.LINE -> "<path d=\\"M-95 0 H95\\" fill=\\"none\\" stroke=\\"$color\\" stroke-width=\\"15\\"/>"
-            ElementKind.DIAMOND -> "<path d=\\"M0 -90 L75 0 L0 90 L-75 0 Z\\"/>"
-            ElementKind.PATH -> "<path d=" + '"' + e.pathData + '"' + "/>"
+            ElementKind.CIRCLE -> """<circle cx="0" cy="0" r="76"/>"""
+            ElementKind.RECTANGLE -> """<rect x="-78" y="-58" width="156" height="116" rx="10"/>"""
+            ElementKind.TRIANGLE -> """<path d="M0 -88 L78 65 L-78 65 Z"/>"""
+            ElementKind.STAR -> """<path d="M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z"/>"""
+            ElementKind.LINE -> """<path d="M-95 0 H95" fill="none" stroke="$color" stroke-width="15"/>"""
+            ElementKind.DIAMOND -> """<path d="M0 -90 L75 0 L0 90 L-75 0 Z"/>"""
+            ElementKind.PATH -> """<path d="${e.pathData}"/>"""
         }
         val transform = "translate(" + (e.x.coerceIn(0f, 1f) * 512f) + " " + (e.y.coerceIn(0f, 1f) * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale.coerceIn(.15f, 2.5f) + ")"
         if (e.cutout) {
             val maskId = "rt_cutout_" + index
-            val maskGeometry = geom.replace(Regex("stroke=\\"[^\\"]*\\""), "stroke=\\"black\\"")
-            maskDefinitions.append("<mask id=\\"").append(maskId).append("\\" maskUnits=\\"userSpaceOnUse\\" x=\\"0\\" y=\\"0\\" width=\\"512\\" height=\\"512\\"><rect x=\\"0\\" y=\\"0\\" width=\\"512\\" height=\\"512\\" fill=\\"white\\"/><g transform=\\"")
-                .append(transform).append("\\" fill=\\"black\\">").append(maskGeometry).append("</g></mask>")
-            content = "<g mask=\\"url(#" + maskId + ")\\">" + content + "</g>"
+            val maskGeometry = if (e.kind == ElementKind.LINE) """<path d="M-95 0 H95" fill="none" stroke="black" stroke-width="15"/>""" else geom
+            maskDefinitions.append("""<mask id="$maskId" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect x="0" y="0" width="512" height="512" fill="white"/><g transform="$transform" fill="black">$maskGeometry</g></mask>""")
+            content = """<g mask="url(#$maskId)">$content</g>"""
         } else {
-            content += "<g opacity=\\"" + e.opacity.coerceIn(0f, 1f) + "\\" transform=\\"" + transform + "\\" fill=\\"" + color + "\\">" + geom + "</g>"
+            content += """<g opacity="${e.opacity.coerceIn(0f, 1f)}" transform="$transform" fill="$color">$geom</g>"""
         }
     }
-    return "<svg xmlns=\\"http://www.w3.org/2000/svg\\" width=\\"512\\" height=\\"512\\" viewBox=\\"0 0 512 512\\"><defs>" + maskDefinitions + "</defs>" + content + "</svg>"
+    return """<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>$maskDefinitions</defs>$content</svg>"""
 }
