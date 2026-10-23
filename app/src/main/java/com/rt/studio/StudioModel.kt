@@ -18,7 +18,7 @@ enum class ElementKind(val title: String) { CIRCLE("Круг"), RECTANGLE("Пр�
 data class VectorObject(
     val id: String = java.util.UUID.randomUUID().toString(), val kind: ElementKind = ElementKind.CIRCLE,
     val color: Int = 0xFFFFFFFF.toInt(), val x: Float = .5f, val y: Float = .5f, val scale: Float = 1f,
-    val rotation: Float = 0f, val opacity: Float = 1f, val visible: Boolean = true, val cutout: Boolean = false, val pathData: String = ""
+    val rotation: Float = 0f, val opacity: Float = 1f, val visible: Boolean = true, val cutout: Boolean = false, val pathData: String = "", val stroke: Boolean = false
 )
 
 data class IconDesign(
@@ -79,7 +79,7 @@ fun IconDesign.toJson() = JSONObject().apply {
     put("background", background); put("foreground", foreground); put("accent", accent); put("shape", shape.name); put("glyph", glyph.name)
     put("corner", corner); put("glyphScale", glyphScale); put("rotation", rotation); put("outline", outline)
     put("backgroundVisible", backgroundVisible); put("glyphVisible", glyphVisible); put("accentVisible", accentVisible)
-    put("elements", org.json.JSONArray().apply { elements.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("color", e.color).put("x", e.x).put("y", e.y).put("scale", e.scale).put("rotation", e.rotation).put("opacity", e.opacity).put("visible", e.visible).put("cutout", e.cutout).put("pathData", e.pathData)) } })
+    put("elements", org.json.JSONArray().apply { elements.forEach { e -> put(JSONObject().put("id", e.id).put("kind", e.kind.name).put("color", e.color).put("x", e.x).put("y", e.y).put("scale", e.scale).put("rotation", e.rotation).put("opacity", e.opacity).put("visible", e.visible).put("cutout", e.cutout).put("pathData", e.pathData).put("stroke", e.stroke)) } })
 }
 fun designFromJson(j: JSONObject) = IconDesign(
     j.optInt("background", 0xFF465D91.toInt()), j.optInt("foreground", -1), j.optInt("accent", 0xFFD9E2FF.toInt()),
@@ -96,7 +96,7 @@ fun designFromJson(j: JSONObject) = IconDesign(
                 kind = runCatching { ElementKind.valueOf(e.optString("kind", "CIRCLE")) }.getOrDefault(ElementKind.CIRCLE),
                 color = e.optInt("color", -1), x = e.optDouble("x", .5).toFloat(), y = e.optDouble("y", .5).toFloat(),
                 scale = e.optDouble("scale", 1.0).toFloat(), rotation = e.optDouble("rotation", 0.0).toFloat(),
-                opacity = e.optDouble("opacity", 1.0).toFloat(), visible = e.optBoolean("visible", true), cutout = e.optBoolean("cutout", false), pathData = e.optString("pathData", "")
+                opacity = e.optDouble("opacity", 1.0).toFloat(), visible = e.optBoolean("visible", true), cutout = e.optBoolean("cutout", false), pathData = e.optString("pathData", ""), stroke = e.optBoolean("stroke", false)
             )
         }
     }.getOrDefault(emptyList())
@@ -186,7 +186,11 @@ fun renderIcon(canvas: AndroidCanvas, d: IconDesign, size: Int) {
             }, p)
             ElementKind.LINE -> canvas.drawLine(-95f, 0f, 95f, 0f, paint(element.color, Paint.Style.STROKE, 15f).apply { alpha = (element.opacity.coerceIn(0f, 1f) * 255).toInt(); if (element.cutout) xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) })
             ElementKind.DIAMOND -> canvas.drawPath(polygon(listOf(0f to -90f, 75f to 0f, 0f to 90f, -75f to 0f)), p)
-            ElementKind.PATH -> canvas.drawPath(simpleSvgPath(element.pathData), p)
+            ElementKind.PATH -> {
+                val pathPaint = if (element.stroke) paint(element.color, Paint.Style.STROKE, 15f).apply { alpha = (element.opacity.coerceIn(0f, 1f) * 255).toInt() } else p
+                if (element.cutout) pathPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                canvas.drawPath(simpleSvgPath(element.pathData), pathPaint)
+            }
         }
         canvas.restoreToCount(es)
     }
@@ -240,12 +244,12 @@ fun designToSvg(d: IconDesign): String {
             ElementKind.STAR -> """<path d="M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z"/>"""
             ElementKind.LINE -> """<path d="M-95 0 H95" fill="none" stroke="$color" stroke-width="15"/>"""
             ElementKind.DIAMOND -> """<path d="M0 -90 L75 0 L0 90 L-75 0 Z"/>"""
-            ElementKind.PATH -> """<path d="${e.pathData}"/>"""
+            ElementKind.PATH -> if (e.stroke) """<path d="${e.pathData}" fill="none" stroke="$color" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>""" else """<path d="${e.pathData}"/>"""
         }
         val transform = "translate(" + (e.x.coerceIn(0f, 1f) * 512f) + " " + (e.y.coerceIn(0f, 1f) * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale.coerceIn(.15f, 2.5f) + ")"
         if (e.cutout) {
             val maskId = "rt_cutout_" + index
-            val maskGeometry = if (e.kind == ElementKind.LINE) """<path d="M-95 0 H95" fill="none" stroke="black" stroke-width="15"/>""" else geom
+            val maskGeometry = if (e.kind == ElementKind.LINE) """<path d="M-95 0 H95" fill="none" stroke="black" stroke-width="15"/>""" else if (e.kind == ElementKind.PATH && e.stroke) geom.replace("stroke=\"$color\"", "stroke=\"black\"") else geom
             maskDefinitions.append("""<mask id="$maskId" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect x="0" y="0" width="512" height="512" fill="white"/><g transform="$transform" fill="black">$maskGeometry</g></mask>""")
             content = """<g mask="url(#$maskId)">$content</g>"""
         } else {

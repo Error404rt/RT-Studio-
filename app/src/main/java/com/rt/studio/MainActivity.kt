@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -84,6 +85,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -736,6 +742,73 @@ private fun FeatureRow(number: String, title: String, detail: String) {
 }
 
 @Composable
+private fun InteractiveIconCanvas(
+    design: IconDesign,
+    modifier: Modifier = Modifier,
+    drawMode: Boolean,
+    onPathAdded: (String) -> Unit
+) {
+    var previewPoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
+    Canvas(modifier.pointerInput(drawMode, design.foreground) {
+        if (!drawMode) {
+            previewPoints = emptyList()
+            return@pointerInput
+        }
+        val points = mutableListOf<Pair<Float, Float>>()
+        fun normalise(offset: Offset): Pair<Float, Float> =
+            (offset.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f) to
+                (offset.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
+        detectDragGestures(
+            onDragStart = { offset ->
+                points.clear()
+                points.add(normalise(offset))
+                previewPoints = points.toList()
+            },
+            onDrag = { change, _ ->
+                change.consume()
+                points.add(normalise(change.position))
+                previewPoints = points.toList()
+            },
+            onDragEnd = {
+                if (points.size >= 2) {
+                    val stride = maxOf(1, points.size / 140)
+                    val sampled = points.filterIndexed { index, _ -> index == 0 || index % stride == 0 || index == points.lastIndex }
+                    fun fmt(value: Float) = String.format(java.util.Locale.US, "%.1f", value)
+                    val pathData = sampled.mapIndexed { index, point ->
+                        val x = fmt(point.first * 512f - 256f)
+                        val y = fmt(point.second * 512f - 256f)
+                        (if (index == 0) "M" else "L") + x + " " + y
+                    }.joinToString(" ")
+                    onPathAdded(pathData)
+                }
+                previewPoints = emptyList()
+            },
+            onDragCancel = { previewPoints = emptyList() }
+        )
+    }) {
+        val canvas = drawContext.canvas.nativeCanvas
+        val saved = canvas.save()
+        canvas.scale(size.width / 512f, size.height / 512f)
+        renderIcon(canvas, design, 512)
+        canvas.restoreToCount(saved)
+        if (drawMode && previewPoints.size > 1) {
+            val path = androidx.compose.ui.graphics.Path().apply {
+                previewPoints.forEachIndexed { index, point ->
+                    val x = point.first * size.width
+                    val y = point.second * size.height
+                    if (index == 0) moveTo(x, y) else lineTo(x, y)
+                }
+            }
+            drawPath(
+                path,
+                Color(design.foreground),
+                style = Stroke(width = size.minDimension * .035f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+        }
+    }
+}
+
+@Composable
 private fun IconCanvas(design: IconDesign, modifier: Modifier = Modifier) {
     Canvas(modifier) {
         val canvas = drawContext.canvas.nativeCanvas
@@ -752,6 +825,7 @@ private fun EditorScreen(
     onUndo: () -> Unit, onRedo: () -> Unit, onPng: () -> Unit, onSvg: () -> Unit, onRandom: () -> Unit
 ) {
     var selectedElementId by remember { mutableStateOf(design.elements.lastOrNull()?.id) }
+    var drawMode by remember { mutableStateOf(false) }
     val selectedElement = design.elements.firstOrNull { it.id == selectedElementId }
     LazyColumn(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
         item {
@@ -763,7 +837,13 @@ private fun EditorScreen(
         item {
             Card(shape = RoundedCornerShape(25.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF20232B))) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconCanvas(design, Modifier.size(230.dp))
+                    FilterChip(selected = drawMode, onClick = { drawMode = !drawMode }, label = { Text(if (drawMode) "Рисование включено" else "Свободно рисовать") })
+                    Text(if (drawMode) "Проведи пальцем по холсту, чтобы добавить векторный штрих." else "Включи свободное рисование, чтобы добавить собственные линии.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    InteractiveIconCanvas(design, Modifier.size(230.dp), drawMode = drawMode, onPathAdded = { path ->
+                        val element = VectorObject(kind = ElementKind.PATH, color = design.foreground, pathData = path, stroke = true)
+                        selectedElementId = element.id
+                        onChange(design.copy(elements = design.elements + element))
+                    })
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = onUndo, enabled = undoEnabled) { Icon(Icons.Rounded.Undo, contentDescription = null); Text("Назад") }
                         OutlinedButton(onClick = onRedo, enabled = redoEnabled) { Icon(Icons.Rounded.Redo, contentDescription = null); Text("Вперёд") }
@@ -869,6 +949,11 @@ private fun EditorScreen(
                     label = { Text("SVG pathData") }, modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8
                 )
             } }
+        }
+        if (selectedElement?.kind == ElementKind.PATH) item {
+            LayerToggle("Контур рисуется линией", selectedElement.stroke) { value ->
+                onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(stroke = value) else it }))
+            }
         }
         if (selectedElement != null) item {
             ColorPicker("Цвет выбранного слоя", selectedElement.color) { color -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(color = color) else it })) }
