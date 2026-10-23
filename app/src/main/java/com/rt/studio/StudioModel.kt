@@ -31,6 +31,37 @@ data class PackItem(val name: String, val component: String, val design: IconDes
 
 val studioPalette = listOf(0xFF465D91.toInt(), 0xFF171923.toInt(), 0xFF0D9488.toInt(), 0xFF7C3AED.toInt(), 0xFFDB2777.toInt(), 0xFFEA580C.toInt(), 0xFF2563EB.toInt(), 0xFF15803D.toInt(), 0xFFF8FAFC.toInt(), 0xFFFDE68A.toInt(), 0xFFB45309.toInt(), 0xFF64748B.toInt(), 0xFF111827.toInt(), 0xFFEF4444.toInt(), 0xFF38BDF8.toInt(), 0xFFC4B5FD.toInt())
 
+fun suggestedGlyphForName(rawName: String): Glyph {
+    val name = rawName.substringAfterLast('/').substringBeforeLast('.').lowercase()
+    return when {
+        listOf("camera", "photo", "selfie").any { name.contains(it) } -> Glyph.CAMERA
+        listOf("gallery", "picture", "image", "photos").any { name.contains(it) } -> Glyph.GALLERY
+        listOf("video", "movie", "youtube", "player", "play").any { name.contains(it) } -> Glyph.PLAY
+        listOf("music", "song", "audio", "spotify", "sound").any { name.contains(it) } -> Glyph.MUSIC
+        listOf("mail", "gmail", "email", "message", "inbox").any { name.contains(it) } -> Glyph.MAIL
+        listOf("setting", "config", "control", "preference").any { name.contains(it) } -> Glyph.SETTINGS
+        listOf("file", "folder", "drive", "document", "explorer").any { name.contains(it) } -> Glyph.FOLDER
+        listOf("star", "favorite", "bookmark").any { name.contains(it) } -> Glyph.STAR
+        listOf("terminal", "console", "shell", "command", "developer").any { name.contains(it) } -> Glyph.TERMINAL
+        listOf("heart", "health", "fitness", "love").any { name.contains(it) } -> Glyph.HEART
+        listOf("shield", "security", "privacy", "protect", "lock").any { name.contains(it) } -> Glyph.SHIELD
+        listOf("bolt", "flash", "power", "energy").any { name.contains(it) } -> Glyph.BOLT
+        else -> Glyph.entries[(name.hashCode() and Int.MAX_VALUE) % Glyph.entries.size]
+    }
+}
+
+fun designForNamedIcon(rawName: String, base: IconDesign): IconDesign {
+    val hash = rawName.lowercase().hashCode() and Int.MAX_VALUE
+    val turns = listOf(-7f, -3f, 0f, 0f, 3f, 7f)
+    val scales = listOf(.9f, .95f, 1f, 1.05f, 1.1f)
+    return base.copy(
+        glyph = suggestedGlyphForName(rawName),
+        glyphScale = scales[hash % scales.size],
+        rotation = turns[(hash / 7) % turns.size],
+        elements = emptyList()
+    )
+}
+
 fun randomDesign(seed: Int = Random.nextInt()): IconDesign {
     val r = Random(seed)
     val palettes = listOf(

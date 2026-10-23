@@ -96,7 +96,7 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 private enum class StudioTab(val title: String) { HOME("Главная"), EDITOR("Редактор"), GENERATOR("Генератор"), PACK("Набор") }
-private data class ArchiveSummary(val count: Int, val hasAppFilter: Boolean, val names: List<String>, val background: Int?, val foreground: Int?)
+private data class ArchiveSummary(val count: Int, val hasAppFilter: Boolean, val names: List<String>, val background: Int?, val foreground: Int?, val accent: Int?, val mappings: Map<String, String>)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -269,13 +269,30 @@ private fun inspectArchive(context: android.content.Context, uri: Uri): ArchiveS
     val names = mutableListOf<String>()
     val backgrounds = mutableListOf<Int>()
     val foregrounds = mutableListOf<Int>()
+    val accents = mutableListOf<Int>()
+    val mappings = linkedMapOf<String, String>()
     context.contentResolver.openInputStream(uri)?.use { raw ->
         ZipInputStream(raw).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
                     val lower = entry.name.lowercase()
-                    if (lower.endsWith("appfilter.xml")) hasXml = true
+                    if (lower.endsWith("appfilter.xml")) {
+                        hasXml = true
+                        val xml = String(readLimited(zip, 2_000_000), Charsets.UTF_8)
+                        val itemPattern = Regex("<item\\b([^>]*)/?>", RegexOption.IGNORE_CASE)
+                        val componentPattern = Regex("""component\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                        val drawablePattern = Regex("""drawable\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                        itemPattern.findAll(xml).forEach { match ->
+                            val attributes = match.groupValues[1]
+                            val component = componentPattern.find(attributes)?.groupValues?.get(1)
+                            val drawable = drawablePattern.find(attributes)?.groupValues?.get(1)
+                            if (!component.isNullOrBlank() && !drawable.isNullOrBlank()) {
+                                val key = drawable.substringAfterLast('/').removePrefix("@").lowercase()
+                                mappings[key] = component
+                            }
+                        }
+                    }
                     if ((lower.endsWith(".png") || lower.endsWith(".webp")) && count < 60) {
                         val bytes = readLimited(zip, 1_000_000)
                         if (bytes.isNotEmpty()) {
@@ -286,8 +303,10 @@ private fun inspectArchive(context: android.content.Context, uri: Uri): ArchiveS
                                 if (bitmap != null && bitmap.width > 4 && bitmap.height > 4) {
                                     val bg = bitmap.getPixel(2, 2)
                                     val fg = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
+                                    val ac = bitmap.getPixel((bitmap.width * 3) / 4, bitmap.height / 4)
                                     if ((bg ushr 24) > 180) backgrounds.add(bg)
                                     if ((fg ushr 24) > 180) foregrounds.add(fg)
+                                    if ((ac ushr 24) > 180) accents.add(ac)
                                     bitmap.recycle()
                                 }
                             }
@@ -300,7 +319,7 @@ private fun inspectArchive(context: android.content.Context, uri: Uri): ArchiveS
         }
     }
     fun common(list: List<Int>, fallback: Int): Int = list.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: fallback
-    return ArchiveSummary(count, hasXml, names.distinct().take(24), common(backgrounds, 0xFF465D91.toInt()), common(foregrounds, -1))
+    return ArchiveSummary(count, hasXml, names.distinct().take(24), common(backgrounds, 0xFF465D91.toInt()), common(foregrounds, -1), common(accents, 0xFFD9E2FF.toInt()), mappings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -320,6 +339,7 @@ private fun StudioApp() {
     var packApplicationId by remember { mutableStateOf(prefs.getString("packApplicationId", "com.rt.iconpack.generated") ?: "com.rt.iconpack.generated") }
     var packageComponent by remember { mutableStateOf("") }
     var importedNames by remember { mutableStateOf<List<String>>(emptyList()) }
+    var importedMappings by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var referenceDetails by remember { mutableStateOf("") }
 
     LaunchedEffect(design, packItems.toList(), packTitle, packApplicationId) { saveProject(context, design, packItems.toList(), packTitle, packApplicationId) }
@@ -343,9 +363,10 @@ private fun StudioApp() {
     val packPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runCatching { inspectArchive(context, uri) }.onSuccess { info ->
             importedNames = info.names
-            referenceDetails = "Найдено изображений: " + info.count + " · appfilter.xml: " + if (info.hasAppFilter) "есть" else "нет"
-            status = "Архив проанализирован. Цвета можно применить как основу нового стиля."
-            change(design.copy(background = info.background ?: design.background, foreground = info.foreground ?: design.foreground))
+            importedMappings = info.mappings
+            referenceDetails = "Найдено изображений: " + info.count + " · appfilter.xml: " + (if (info.hasAppFilter) "есть" else "нет") + " · mappings: " + info.mappings.size
+            status = "Архив проанализирован. Извлечены имена ресурсов, mappings и приблизительная палитра."
+            change(design.copy(background = info.background ?: design.background, foreground = info.foreground ?: design.foreground, accent = info.accent ?: design.accent))
         }.onFailure { status = "Не удалось прочитать архив: " + (it.localizedMessage ?: "ошибка формата") }
     }
     val pngExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
@@ -444,6 +465,20 @@ private fun StudioApp() {
                 referenceDetails = referenceDetails, importedNames = importedNames,
                 onImportImage = { imagePicker.launch("image/*") }, onImportPack = { packPicker.launch(arrayOf("application/zip", "application/vnd.android.package-archive", "*/*")) },
                 onSaveProject = { projectExporter.launch("rt-studio-project.json") }, onLoadProject = { projectImporter.launch(arrayOf("application/json", "text/*", "*/*")) },
+                onGenerateFromReference = {
+                    var added = 0
+                    val existing = packItems.map { it.name }.toMutableSet()
+                    importedNames.forEachIndexed { index, raw ->
+                        val clean = raw.lowercase().replace(Regex("[^a-z0-9_]+"), "_").trim('_').ifBlank { "icon_$index" }.let { if (it.first().isDigit()) "icon_" + it else it }
+                        if (existing.add(clean)) {
+                            val component = importedMappings[raw.lowercase()] ?: importedMappings[clean] ?: ""
+                            packItems.add(PackItem(clean, component, designForNamedIcon(raw, design)))
+                            added++
+                        }
+                    }
+                    tab = StudioTab.PACK
+                    status = "Добавлено процедурных иконок в стиле референса: " + added + ". Исходные пиксели набора не копировались."
+                },
                 onExportReference = { referenceToExport = imageReference; referenceExporter.launch("reference-processed.png") },
                 onCropReference = { imageReference?.let { imageReference = cropReferenceSquare(it); status = "Референс обрезан до центрального квадрата." } },
                 onRemoveBackground = { imageReference?.let { imageReference = removeSolidBackground(it, backgroundTolerance.toInt()); status = "Попытка удаления однотонного фона завершена. Проверь края и экспортируй PNG." } },
@@ -499,7 +534,7 @@ private fun StudioApp() {
 @Composable
 private fun HomeScreen(
     modifier: Modifier, design: IconDesign, image: Bitmap?, status: String, referenceDetails: String, importedNames: List<String>,
-    onImportImage: () -> Unit, onImportPack: () -> Unit, onSaveProject: () -> Unit, onLoadProject: () -> Unit,
+    onImportImage: () -> Unit, onImportPack: () -> Unit, onSaveProject: () -> Unit, onLoadProject: () -> Unit, onGenerateFromReference: () -> Unit,
     onExportReference: () -> Unit, onCropReference: () -> Unit, onRemoveBackground: () -> Unit,
     backgroundTolerance: Float, onBackgroundTolerance: (Float) -> Unit,
     onEditor: () -> Unit, onGenerator: () -> Unit, onAdd: () -> Unit, onTraceImage: () -> Unit, onUseSampleColors: () -> Unit
@@ -549,6 +584,9 @@ private fun HomeScreen(
                 Text("Результат анализа архива", fontWeight = FontWeight.SemiBold)
                 Text(referenceDetails, style = MaterialTheme.typography.bodyMedium)
                 if (importedNames.isNotEmpty()) Text(importedNames.take(12).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (importedNames.isNotEmpty()) Button(onClick = onGenerateFromReference, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null); Spacer(Modifier.width(6.dp)); Text("Создать иконки в этом стиле")
+                }
             } }
         }
         item {
