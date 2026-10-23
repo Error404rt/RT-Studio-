@@ -103,6 +103,7 @@ private fun starPath() = Path().apply {
 
 fun renderIcon(canvas: AndroidCanvas, d: IconDesign, size: Int) {
     val top = canvas.save(); canvas.scale(size / 512f, size / 512f)
+    val layer = canvas.saveLayer(0f, 0f, 512f, 512f, null)
     val rect = RectF(28f, 28f, 484f, 484f)
     val outer = polygon(listOf(256f to 28f, 454f to 142f, 454f to 370f, 256f to 484f, 58f to 370f, 58f to 142f))
     val diamond = polygon(listOf(256f to 24f, 488f to 256f, 256f to 488f, 24f to 256f))
@@ -158,6 +159,7 @@ fun renderIcon(canvas: AndroidCanvas, d: IconDesign, size: Int) {
         }
         canvas.restoreToCount(es)
     }
+    canvas.restoreToCount(layer)
     canvas.restoreToCount(top)
 }
 fun renderIconBitmap(design: IconDesign, size: Int = 512): Bitmap = Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888).also { renderIcon(AndroidCanvas(it),design,size) }
@@ -186,24 +188,37 @@ fun designToSvg(d: IconDesign): String {
         Glyph.HEART -> "<path d=\"M256 355 C226 327 150 270 150 218 C150 157 222 145 256 199 C290 145 362 157 362 218 C362 270 286 327 256 355 Z\"/>"
         Glyph.SHIELD -> "<path d=\"M256 132 L354 169 L340 284 L256 375 L172 284 L158 169 Z\" fill=\"none\" stroke=\"$fg\" stroke-width=\"22\"/><path d=\"M205 253 L242 290 L309 219\" fill=\"none\" stroke=\"$fg\" stroke-width=\"24\"/>"
     }
-    return buildString {
-        append("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"512\" height=\"512\" viewBox=\"0 0 512 512\">")
-        if(d.backgroundVisible) { append("<g fill=\"$bg\">$shape</g>"); if(d.outline) append("<g fill=\"none\" stroke=\"$ac\" stroke-width=\"9\">$shape</g>") }
-        if(d.accentVisible) append("<g fill=\"$ac\"><circle cx=\"394\" cy=\"120\" r=\"13\"/><circle cx=\"118\" cy=\"390\" r=\"8\"/><circle cx=\"395\" cy=\"388\" r=\"6\"/></g>")
-        if(d.glyphVisible) append("<g fill=\"$fg\" transform=\"rotate(" + d.rotation + " 256 256) translate(256 256) scale(" + d.glyphScale + ") translate(-256 -256)\">$g</g>")
-        d.elements.filter { it.visible }.forEach { e ->
-            val color = if (e.cutout) bg else hex(e.color)
-            val geom = when (e.kind) {
-                ElementKind.CIRCLE -> "<circle cx=\"0\" cy=\"0\" r=\"76\"/>"
-                ElementKind.RECTANGLE -> "<rect x=\"-78\" y=\"-58\" width=\"156\" height=\"116\" rx=\"10\"/>"
-                ElementKind.TRIANGLE -> "<path d=\"M0 -88 L78 65 L-78 65 Z\"/>"
-                ElementKind.STAR -> "<path d=\"M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z\"/>"
-                ElementKind.LINE -> "<path d=\"M-95 0 H95\" fill=\"none\" stroke=\"$color\" stroke-width=\"15\"/>"
-                ElementKind.DIAMOND -> "<path d=\"M0 -90 L75 0 L0 90 L-75 0 Z\"/>"
-                ElementKind.PATH -> "<path d=" + '"' + e.pathData + '"' + "/>"
-            }
-            append("<g opacity=\"" + e.opacity.coerceIn(0f, 1f) + "\" transform=\"translate(" + (e.x * 512f) + " " + (e.y * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale + ")\" fill=\"" + color + "\">" + geom + "</g>")
+    val baseMarkup = buildString {
+        if (d.backgroundVisible) {
+            append("<g fill=\\"$bg\\">$shape</g>")
+            if (d.outline) append("<g fill=\\"none\\" stroke=\\"$ac\\" stroke-width=\\"9\\">$shape</g>")
         }
-        append("</svg>")
+        if (d.accentVisible) append("<g fill=\\"$ac\\"><circle cx=\\"394\\" cy=\\"120\\" r=\\"13\\"/><circle cx=\\"118\\" cy=\\"390\\" r=\\"8\\"/><circle cx=\\"395\\" cy=\\"388\\" r=\\"6\\"/></g>")
+        if (d.glyphVisible) append("<g fill=\\"$fg\\" transform=\\"rotate(" + d.rotation + " 256 256) translate(256 256) scale(" + d.glyphScale.coerceIn(.45f, 1.5f) + ") translate(-256 -256)\\">$g</g>")
     }
+    val maskDefinitions = StringBuilder()
+    var content = baseMarkup
+    d.elements.filter { it.visible }.forEachIndexed { index, e ->
+        val color = hex(e.color)
+        val geom = when (e.kind) {
+            ElementKind.CIRCLE -> "<circle cx=\\"0\\" cy=\\"0\\" r=\\"76\\"/>"
+            ElementKind.RECTANGLE -> "<rect x=\\"-78\\" y=\\"-58\\" width=\\"156\\" height=\\"116\\" rx=\\"10\\"/>"
+            ElementKind.TRIANGLE -> "<path d=\\"M0 -88 L78 65 L-78 65 Z\\"/>"
+            ElementKind.STAR -> "<path d=\\"M0 -86 L23 -30 L82 -27 L37 10 L52 68 L0 37 L-52 68 L-37 10 L-82 -27 L-23 -30 Z\\"/>"
+            ElementKind.LINE -> "<path d=\\"M-95 0 H95\\" fill=\\"none\\" stroke=\\"$color\\" stroke-width=\\"15\\"/>"
+            ElementKind.DIAMOND -> "<path d=\\"M0 -90 L75 0 L0 90 L-75 0 Z\\"/>"
+            ElementKind.PATH -> "<path d=" + '"' + e.pathData + '"' + "/>"
+        }
+        val transform = "translate(" + (e.x.coerceIn(0f, 1f) * 512f) + " " + (e.y.coerceIn(0f, 1f) * 512f) + ") rotate(" + e.rotation + ") scale(" + e.scale.coerceIn(.15f, 2.5f) + ")"
+        if (e.cutout) {
+            val maskId = "rt_cutout_" + index
+            val maskGeometry = geom.replace(Regex("stroke=\\"[^\\"]*\\""), "stroke=\\"black\\"")
+            maskDefinitions.append("<mask id=\\"").append(maskId).append("\\" maskUnits=\\"userSpaceOnUse\\" x=\\"0\\" y=\\"0\\" width=\\"512\\" height=\\"512\\"><rect x=\\"0\\" y=\\"0\\" width=\\"512\\" height=\\"512\\" fill=\\"white\\"/><g transform=\\"")
+                .append(transform).append("\\" fill=\\"black\\">").append(maskGeometry).append("</g></mask>")
+            content = "<g mask=\\"url(#" + maskId + ")\\">" + content + "</g>"
+        } else {
+            content += "<g opacity=\\"" + e.opacity.coerceIn(0f, 1f) + "\\" transform=\\"" + transform + "\\" fill=\\"" + color + "\\">" + geom + "</g>"
+        }
+    }
+    return "<svg xmlns=\\"http://www.w3.org/2000/svg\\" width=\\"512\\" height=\\"512\\" viewBox=\\"0 0 512 512\\"><defs>" + maskDefinitions + "</defs>" + content + "</svg>"
 }

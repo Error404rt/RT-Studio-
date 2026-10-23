@@ -704,7 +704,7 @@ private fun EditorScreen(
                 LayerToggle("Вырезать прозрачное отверстие", selectedElement.cutout) { value -> onChange(design.copy(elements = design.elements.map { if (it.id == selectedElement.id) it.copy(cutout = value) else it })) }
             } }
         }
-        if (selectedElement?.kind == ElementKind.PATH) item {
+        if (selectedElement != null && selectedElement.kind == ElementKind.PATH) item {
             Card { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Редактирование SVG-контура", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("Поддерживаются команды M, L и Z. Изменение координат здесь меняет форму векторного слоя.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
